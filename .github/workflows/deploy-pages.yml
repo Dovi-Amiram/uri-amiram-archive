@@ -1,0 +1,65 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# A newer push (e.g. a second entry added right after the first) already contains
+# everything, so an older in-progress deployment can be cancelled.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Generate archive indexes (validates every entry)
+        run: python scripts/build_archive_indexes.py
+
+      - name: Validate generated JSON
+        run: |
+          python - <<'EOF'
+          import json, pathlib
+          for name in ("creations.json", "palindromes.json", "version.json"):
+              data = json.loads(pathlib.Path("public/data", name).read_text(encoding="utf-8"))
+              print(name, len(data) if isinstance(data, list) else data["buildId"])
+          EOF
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build site
+        run: npm run build:app
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v5

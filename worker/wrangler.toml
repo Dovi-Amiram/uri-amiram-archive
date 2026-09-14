@@ -1,0 +1,17 @@
+name = "uri-amiram-archive-api"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+# Non-secret configuration. Secrets (GITHUB_TOKEN, ADMIN_PASSWORD) are set with
+#   npx wrangler secret put GITHUB_TOKEN
+#   npx wrangler secret put ADMIN_PASSWORD
+# and are never stored in this file or in git.
+[vars]
+GITHUB_OWNER = "Dovi-Amiram"
+GITHUB_REPO = "uri-amiram-archive"
+GITHUB_BRANCH = "main"
+# Comma-separated exact origins allowed to call the API (scheme + host, no path).
+ALLOWED_ORIGINS = "https://dovi-amiram.github.io,http://localhost:5173"
+# Lifetime of the session token issued after a correct password, in seconds.
+SESSION_TTL_SECONDS = "7200"

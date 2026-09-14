@@ -1,0 +1,30 @@
+{
+  "name": "uri-amiram-archive",
+  "private": true,
+  "version": "1.0.0",
+  "description": "ארכיון היצירות של אורי עמירם — static Hebrew RTL archive site",
+  "type": "module",
+  "scripts": {
+    "data": "python3 scripts/build_archive_indexes.py",
+    "dev": "npm run data && vite",
+    "build": "npm run data && npm run build:app",
+    "build:app": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.5.1",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.0"
+  }
+}

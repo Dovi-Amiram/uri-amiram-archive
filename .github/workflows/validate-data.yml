@@ -1,0 +1,67 @@
+name: Validate data and code
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  archive:
+    name: Archive data + Python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: scrapers/requirements.txt
+
+      - name: Install test dependencies (scrapers minus the browser)
+        run: pip install -r scrapers/requirements.txt
+
+      - name: Validate archive (JSON parses, required fields, categories, sources, unique ids)
+        run: python scripts/build_archive_indexes.py --check
+
+      - name: Generate indexes
+        run: python scripts/build_archive_indexes.py
+
+      - name: Python tests
+        run: python -m pytest -q tests/python
+
+  frontend:
+    name: Frontend typecheck, tests, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+  worker:
+    name: Worker typecheck + tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
