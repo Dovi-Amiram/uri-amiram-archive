@@ -241,7 +241,17 @@ describe('entry helpers', () => {
     expect(validateInput({ category: 'creation', content: 'x', title: 5 })).toEqual({ ok: false, error: 'כותרת לא תקינה' })
     expect(validateInput([])).toMatchObject({ ok: false })
     const result = validateInput({ category: 'palindrome', content: 'x', title: '   ', author: '  ' })
-    expect(result).toEqual({ ok: true, value: { category: 'palindrome', title: null, content: 'x', postedAt: null, author: 'אורי עמירם' } })
+    expect(result).toEqual({
+      ok: true,
+      value: { category: 'palindrome', title: null, content: 'x', postedAt: null, author: 'אורי עמירם', likes: null, sourceUrl: null },
+    })
+    expect(validateInput({ category: 'palindrome', content: 'x', likes: 12, sourceUrl: 'https://example.com/p' })).toMatchObject({
+      ok: true,
+      value: { likes: 12, sourceUrl: 'https://example.com/p' },
+    })
+    expect(validateInput({ category: 'palindrome', content: 'x', likes: -1 })).toMatchObject({ ok: false })
+    expect(validateInput({ category: 'palindrome', content: 'x', likes: 2.5 })).toMatchObject({ ok: false })
+    expect(validateInput({ category: 'palindrome', content: 'x', sourceUrl: 'javascript:alert(1)' })).toMatchObject({ ok: false })
   })
 
   it('truncates very long titles in commit messages', () => {

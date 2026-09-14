@@ -84,7 +84,13 @@ tests/python/               Python tests
 | `postedAt` | original publication date (`YYYY-MM-DD` or ISO datetime) or `null`; never invented |
 | `sourceUrl`, `sourceId` | original location, `null` for manual entries |
 | `attachments` | images: `{ "type": "image", "path": "attachments/facebook/<postId>-<photoId>.jpg", "width", "height", "alt" }`; `path` is relative to `archive/`. Content may be empty when there is an image |
-| `likes` | *optional*, Facebook posts only: total reactions on the post when last scraped. Updating it does not change `updatedAt` |
+| `likes` | *optional*: total reactions on the Facebook post when last scraped (or set by hand). Refreshing it does not change `updatedAt` |
+| `editedAt`, `editedFields` | *optional*: set when an entry is edited on the website. Scrapers never overwrite the fields listed in `editedFields` (`title`, `content`, `postedAt`, `author`, `likes`, `sourceUrl`) |
+
+`archive/excluded.json` lists scraped items deleted on the website
+(`{"entries": [{"id", "source", "sourceId", "deletedAt", "title"}]}`). Scrapers skip them, and the
+build fails if an excluded id is still present in the archive. To restore a deleted item, remove it
+from this file and restore its JSON file from git history.
 
 Types: `src/types/archive.ts` (frontend), `worker/src/entry.ts` (Worker), `scrapers/archive_utils.py` (Python).
 
@@ -273,7 +279,7 @@ VITE_WRITE_API_URL=https://uri-amiram-archive-api.uri-amiram-archive-api.workers
 Commit and push; the next deploy enables the add buttons. If the Pages origin ever changes,
 update `ALLOWED_ORIGINS` in `worker/wrangler.toml` and redeploy the Worker.
 
-## 17. What happens when an entry is added
+## 17. Adding, editing and deleting entries on the site
 
 1. On the site, choose a tab and click **הוספת יצירה** / **הוספת פלינדרום**.
 2. Fill in the form (title optional, content required, optional date, author defaults to אורי עמירם), plus the password the first time.
@@ -285,7 +291,20 @@ update `ALLOWED_ORIGINS` in `worker/wrangler.toml` and redeploy the Worker.
    deployment contains the entry, the data reloads. If it takes longer, the site shows
    "היצירה נשמרה בהצלחה. ייתכן שיחלפו מספר רגעים עד שתופיע באתר." This is not an error.
 
-To edit or delete an entry, change or remove its JSON file on GitHub (web editor is fine) and commit.
+**Editing:** open an entry → **עריכה**. Title, content, date, author, like count and source link
+can be changed (images are kept). The Worker commits `Edit <kind>: <title>`, marks the changed
+fields in `editedFields` so later scrapes don't overwrite them, and the site shows the change as
+pending until the new deployment is live. If the date is left unchanged, the original time of day
+is kept.
+
+**Deleting:** open an entry → **מחיקה** → confirm. One commit removes the entry, its images and
+raw snapshot, and (for Tzura/Facebook items) records it in `archive/excluded.json` so it is never
+re-scraped. Everything stays recoverable from git history.
+
+**Sorting:** creations by date or title, palindromes by date or likes; the arrow button reverses
+the order. Items without a date/title/like count always appear last.
+
+Editing JSON files directly on GitHub also works; the site rebuilds on every commit.
 
 ## 18. If a source website disappears
 

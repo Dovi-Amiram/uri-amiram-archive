@@ -2,16 +2,31 @@
  * uri-amiram-archive write API (Cloudflare Worker).
  *
  *   POST /api/login    { password }                         -> { token, expiresAt }
- *   POST /api/entries  Authorization: Bearer <token>, entry -> 201 { entry, path, commitSha }
- *   GET  /api/health                                         -> { ok: true }
+ *   POST   /api/entries           Bearer token, entry          -> 201 { entry, path, commitSha }
+ *   PUT    /api/entries/:id       Bearer token, entry fields   -> 200 { entry, path, commitSha, changed }
+ *   DELETE /api/entries/:id?category=creation|palindrome       -> 200 { id, deleted, commitSha }
+ *   GET    /api/health                                         -> { ok: true }
  *
- * Its only job is committing a new JSON file into the GitHub repository; GitHub Actions then
+ * Its only job is committing archive changes into the GitHub repository; GitHub Actions then
  * rebuilds and redeploys the static site. GitHub credentials exist only as Worker secrets.
  */
 
 import { bearerToken, issueToken, safeEqual, verifyToken } from './auth'
-import { buildEntry, commitMessage, entryPath, LIMITS, serializeEntry, validateInput } from './entry'
-import { createFile, GitHubError } from './github'
+import {
+  addExclusion,
+  applyEdit,
+  buildEntry,
+  commitMessage,
+  ENTRY_ID,
+  entryPath,
+  LIMITS,
+  parseStoredEntry,
+  rawSnapshotPath,
+  serializeEntry,
+  validateInput,
+  type Category,
+} from './entry'
+import { commitChanges, createFile, getFile, GitHubError, type FileChange, type GitHubConfig } from './github'
 
 export interface Env {
   GITHUB_TOKEN: string
@@ -49,7 +64,7 @@ function corsHeaders(request: Request, env: Env): Record<string, string> {
   if (!origin || !allowedOrigins(env).has(origin)) return { Vary: 'Origin' }
   return {
     'Access-Control-Allow-Origin': origin,
-    'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin',
@@ -92,6 +107,23 @@ function configProblem(env: Env): string | null {
   return missing.length ? `missing configuration: ${missing.join(', ')}` : null
 }
 
+const EXCLUSIONS_PATH = 'archive/excluded.json'
+
+const githubConfig = (env: Env): GitHubConfig => ({
+  token: env.GITHUB_TOKEN,
+  owner: env.GITHUB_OWNER,
+  repo: env.GITHUB_REPO,
+  branch: env.GITHUB_BRANCH,
+})
+
+const isCategory = (value: unknown): value is Category => value === 'creation' || value === 'palindrome'
+
+function githubFailure(request: Request, env: Env, err: unknown, action: string): Response {
+  console.error(`${action} failed`, err instanceof Error ? err.message : err)
+  const status = err instanceof GitHubError && err.status === 422 ? 409 : 502
+  return error(request, env, status, 'השמירה נכשלה. נסו שוב בעוד מספר רגעים.')
+}
+
 export async function handleRequest(request: Request, env: Env, deps: Deps = defaultDeps()): Promise<Response> {
   const url = new URL(request.url)
   const origin = request.headers.get('Origin')
@@ -105,11 +137,20 @@ export async function handleRequest(request: Request, env: Env, deps: Deps = def
     return json(request, env, 200, { ok: true })
   }
 
-  if (request.method !== 'POST' || (url.pathname !== '/api/login' && url.pathname !== '/api/entries')) {
-    return error(request, env, 404, 'לא נמצא')
-  }
+  const entryMatch = /^\/api\/entries\/([^/]+)$/.exec(url.pathname)
+  const route =
+    request.method === 'POST' && url.pathname === '/api/login'
+      ? 'login'
+      : request.method === 'POST' && url.pathname === '/api/entries'
+        ? 'create'
+        : request.method === 'PUT' && entryMatch
+          ? 'edit'
+          : request.method === 'DELETE' && entryMatch
+            ? 'delete'
+            : null
+  if (!route) return error(request, env, 404, 'לא נמצא')
 
-  // Browsers always send Origin on cross-origin POSTs; refuse any site that is not ours.
+  // Browsers always send Origin on cross-origin requests; refuse any site that is not ours.
   // (Requests without Origin, e.g. curl, still need the password/token.)
   if (origin && !allowedOrigins(env).has(origin)) return error(request, env, 403, 'מקור הבקשה אינו מורשה')
 
@@ -119,11 +160,15 @@ export async function handleRequest(request: Request, env: Env, deps: Deps = def
     return error(request, env, 500, 'השרת אינו מוגדר כראוי')
   }
 
-  const parsed = await readJsonBody(request)
-  if (!parsed.ok) return error(request, env, parsed.status, parsed.message)
+  let body: unknown = null
+  if (route !== 'delete') {
+    const parsed = await readJsonBody(request)
+    if (!parsed.ok) return error(request, env, parsed.status, parsed.message)
+    body = parsed.body
+  }
 
-  if (url.pathname === '/api/login') {
-    const password = (parsed.body as { password?: unknown } | null)?.password
+  if (route === 'login') {
+    const password = (body as { password?: unknown } | null)?.password
     if (typeof password !== 'string' || !(await safeEqual(password, env.ADMIN_PASSWORD))) {
       // Slow down guessing a little (there is no storage for real rate limiting; see README).
       await new Promise((resolve) => setTimeout(resolve, 750))
@@ -133,29 +178,71 @@ export async function handleRequest(request: Request, env: Env, deps: Deps = def
     return json(request, env, 200, await issueToken(env.ADMIN_PASSWORD, ttl, deps.now().getTime()))
   }
 
-  // POST /api/entries
   if (!(await verifyToken(env.ADMIN_PASSWORD, bearerToken(request), deps.now().getTime()))) {
     return error(request, env, 401, 'נדרשת התחברות')
   }
+  const config = githubConfig(env)
 
-  const validation = validateInput(parsed.body)
-  if (!validation.ok) return error(request, env, 400, validation.error)
+  if (route === 'create') {
+    const validation = validateInput(body)
+    if (!validation.ok) return error(request, env, 400, validation.error)
+    const entry = buildEntry(validation.value, deps.uuid(), deps.now())
+    const path = entryPath(entry)
+    try {
+      const { commitSha } = await createFile(config, path, serializeEntry(entry), commitMessage(entry), deps.fetch)
+      return json(request, env, 201, { entry, path, commitSha })
+    } catch (err) {
+      return githubFailure(request, env, err, 'create')
+    }
+  }
 
-  const entry = buildEntry(validation.value, deps.uuid(), deps.now())
-  const path = entryPath(entry)
+  // edit / delete: locate the existing file
+  const id = decodeURIComponent(entryMatch![1])
+  const category = route === 'edit' ? (body as { category?: unknown } | null)?.category : url.searchParams.get('category')
+  if (!ENTRY_ID.test(id)) return error(request, env, 400, 'מזהה לא תקין')
+  if (!isCategory(category)) return error(request, env, 400, 'קטגוריה לא תקינה')
+  const path = entryPath({ id, category })
+
+  let existing
   try {
-    const { commitSha } = await createFile(
-      { token: env.GITHUB_TOKEN, owner: env.GITHUB_OWNER, repo: env.GITHUB_REPO, branch: env.GITHUB_BRANCH },
-      path,
-      serializeEntry(entry),
-      commitMessage(entry),
-      deps.fetch,
-    )
-    return json(request, env, 201, { entry, path, commitSha })
+    const file = await getFile(config, path, deps.fetch)
+    existing = file ? parseStoredEntry(file.text) : null
   } catch (err) {
-    console.error('commit failed', err instanceof Error ? err.message : err)
-    const status = err instanceof GitHubError && err.status === 422 ? 409 : 502
-    return error(request, env, status, 'השמירה נכשלה. נסו שוב בעוד מספר רגעים.')
+    return githubFailure(request, env, err, 'read')
+  }
+  if (!existing || existing.id !== id) return error(request, env, 404, 'הפריט לא נמצא')
+
+  if (route === 'edit') {
+    const validation = validateInput(body, { allowEmptyContent: existing.attachments.length > 0 })
+    if (!validation.ok) return error(request, env, 400, validation.error)
+    const { entry, changed } = applyEdit(existing, validation.value, deps.now())
+    if (changed.length === 0) return json(request, env, 200, { entry, path, commitSha: null, changed })
+    try {
+      const { commitSha } = await commitChanges(config, [{ path, content: serializeEntry(entry) }], commitMessage(entry, 'Edit'), deps.fetch)
+      return json(request, env, 200, { entry, path, commitSha, changed })
+    } catch (err) {
+      return githubFailure(request, env, err, 'edit')
+    }
+  }
+
+  // delete: the entry, its images and raw snapshot, plus an exclusion record for scraped items
+  try {
+    const changes: FileChange[] = [{ path, content: null }]
+    for (const attachment of existing.attachments) {
+      if (typeof attachment.path === 'string' && /^attachments\/[\w./-]+$/.test(attachment.path) && !attachment.path.includes('..')) {
+        changes.push({ path: `archive/${attachment.path}`, content: null })
+      }
+    }
+    const raw = rawSnapshotPath(existing)
+    if (raw && (await getFile(config, raw, deps.fetch))) changes.push({ path: raw, content: null })
+    if (existing.source !== 'manual') {
+      const exclusions = await getFile(config, EXCLUSIONS_PATH, deps.fetch)
+      changes.push({ path: EXCLUSIONS_PATH, content: addExclusion(exclusions?.text ?? null, existing, deps.now()) })
+    }
+    const { commitSha } = await commitChanges(config, changes, commitMessage(existing, 'Delete'), deps.fetch)
+    return json(request, env, 200, { id, deleted: true, commitSha })
+  } catch (err) {
+    return githubFailure(request, env, err, 'delete')
   }
 }
 

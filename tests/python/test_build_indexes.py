@@ -60,3 +60,13 @@ def test_build_rejects_invalid_archive(tmp_path, capsys):
 def test_empty_archive_builds_empty_indexes(tmp_path):
     assert bai.build(tmp_path / "archive", tmp_path / "out") == 0
     assert json.loads((tmp_path / "out" / "creations.json").read_text()) == []
+
+
+def test_excluded_entry_still_in_archive_fails_validation(tmp_path, capsys):
+    archive = tmp_path / "archive"
+    _save(archive, source="facebook", category="palindrome", source_id="5", content="x")
+    au.write_json_atomic(archive / "excluded.json", {"entries": [{"id": "facebook-5", "source": "facebook"}]})
+    assert bai.build(archive, tmp_path / "out", check_only=True) == 1
+    assert "excluded.json" in capsys.readouterr().err
+    (archive / "palindromes" / "facebook-5.json").unlink()
+    assert bai.build(archive, tmp_path / "out", check_only=True) == 0

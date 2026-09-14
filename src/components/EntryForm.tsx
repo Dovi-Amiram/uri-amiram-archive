@@ -1,32 +1,43 @@
-import { useId, useRef, useState, type FormEvent } from 'react'
+import { useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import type { ArchiveEntry, SectionInfo } from '../types/archive'
-import { ApiError, createEntry, isWriteApiConfigured, login, type SessionToken } from '../utils/api'
+import { createEntry, isSessionValid, isWriteApiConfigured, updateEntry, type SessionToken } from '../utils/api'
 import { parseEntry } from '../utils/archive'
-import { emptyForm, LIMITS, toPayload, validateEntryForm, type EntryFormValues, type FormErrors } from '../utils/validation'
+import { WrongPasswordError, withSession } from '../utils/session'
+import { emptyForm, formFromEntry, LIMITS, toPayload, validateEntryForm, type EntryFormValues, type FormErrors } from '../utils/validation'
 import { Dialog } from './Dialog'
+import { PasswordField } from './PasswordField'
 
 interface EntryFormProps {
   section: SectionInfo
-  /** Short-lived session token, kept only in memory (never localStorage). */
+  /** Present when editing an existing entry. */
+  entry?: ArchiveEntry
   session: SessionToken | null
   onSession: (session: SessionToken | null) => void
   onClose: () => void
-  onSaved: (entry: ArchiveEntry) => void
+  onSaved: (entry: ArchiveEntry, kind: 'create' | 'update') => void
 }
 
-const isSessionValid = (s: SessionToken | null) => !!s && s.expiresAt - 30_000 > Date.now()
-
-export function EntryForm({ section, session, onSession, onClose, onSaved }: EntryFormProps) {
-  const [values, setValues] = useState<EntryFormValues>(emptyForm)
+export function EntryForm({ section, entry, session, onSession, onClose, onSaved }: EntryFormProps) {
+  const editing = !!entry
+  const hasImages = !!entry && entry.attachments.length > 0
+  const [values, setValues] = useState<EntryFormValues>(() => (entry ? formFromEntry(entry) : emptyForm()))
   const [errors, setErrors] = useState<FormErrors>({})
   const [password, setPassword] = useState('')
   const [passwordError, setPasswordError] = useState<string | null>(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const needsPassword = !isSessionValid(session)
-  const ids = { title: useId(), content: useId(), postedAt: useId(), author: useId(), password: useId() }
+  const ids = {
+    title: useId(),
+    content: useId(),
+    postedAt: useId(),
+    author: useId(),
+    likes: useId(),
+    sourceUrl: useId(),
+  }
   const contentRef = useRef<HTMLTextAreaElement>(null)
   const passwordRef = useRef<HTMLInputElement>(null)
+  const showLikes = section.category === 'palindrome' || (entry?.likes ?? null) !== null
 
   const update = (field: keyof EntryFormValues) => (event: { target: { value: string } }) => {
     setValues((v) => ({ ...v, [field]: event.target.value }))
@@ -36,7 +47,7 @@ export function EntryForm({ section, session, onSession, onClose, onSaved }: Ent
   async function handleSubmit(event: FormEvent) {
     event.preventDefault()
     setSubmitError(null)
-    const found = validateEntryForm(values)
+    const found = validateEntryForm(values, { allowEmptyContent: hasImages })
     const pwMissing = needsPassword && !password
     setErrors(found)
     setPasswordError(pwMissing ? 'יש להזין סיסמה' : null)
@@ -51,29 +62,17 @@ export function EntryForm({ section, session, onSession, onClose, onSaved }: Ent
 
     setSaving(true)
     try {
-      let active = session
-      if (needsPassword) {
-        try {
-          active = await login(password)
-        } catch (err) {
-          if (err instanceof ApiError && err.status === 401) {
-            setPasswordError('הסיסמה שגויה')
-            passwordRef.current?.focus()
-            return
-          }
-          throw err
-        }
-        onSession(active)
-        setPassword('')
-      }
-      const result = await createEntry(active!.token, toPayload(values, section.category))
+      const payload = toPayload(values, section.category, entry)
+      const result = await withSession(session, password, onSession, (token) =>
+        entry ? updateEntry(token, entry.id, payload) : createEntry(token, payload),
+      )
       const saved = parseEntry(result.entry)
       if (!saved) throw new Error('אירעה שגיאה')
-      onSaved(saved)
+      onSaved(saved, editing ? 'update' : 'create')
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        onSession(null) // session expired: ask for the password again
-        setSubmitError('פג תוקף ההתחברות. יש להזין את הסיסמה שוב.')
+      if (err instanceof WrongPasswordError) {
+        setPasswordError(err.message)
+        passwordRef.current?.focus()
       } else {
         setSubmitError(err instanceof Error ? err.message : 'אירעה שגיאה')
       }
@@ -82,10 +81,12 @@ export function EntryForm({ section, session, onSession, onClose, onSaved }: Ent
     }
   }
 
+  const title = editing ? section.editLabel : section.addLabel
+
   if (!isWriteApiConfigured()) {
     return (
-      <Dialog title={section.addLabel} onClose={onClose}>
-        <p className="form-note">הוספת פריטים עדיין אינה זמינה באתר זה.</p>
+      <Dialog title={title} onClose={onClose}>
+        <p className="form-note">עריכת פריטים עדיין אינה זמינה באתר זה.</p>
         <div className="form-actions">
           <button type="button" className="button" onClick={onClose}>
             סגירה
@@ -95,96 +96,92 @@ export function EntryForm({ section, session, onSession, onClose, onSaved }: Ent
     )
   }
 
-  const describedBy = (field: keyof EntryFormValues, hint?: string) =>
-    [errors[field] ? `${ids[field]}-error` : null, hint].filter(Boolean).join(' ') || undefined
+  const field = (
+    name: keyof EntryFormValues,
+    label: ReactNode,
+    input: (props: { id: string; 'aria-invalid': boolean; 'aria-describedby'?: string }) => ReactNode,
+    hint?: string,
+  ) => {
+    const id = ids[name]
+    const describedBy = [errors[name] ? `${id}-error` : null, hint ? `${id}-hint` : null].filter(Boolean).join(' ') || undefined
+    return (
+      <div className="field">
+        <label htmlFor={id}>{label}</label>
+        {input({ id, 'aria-invalid': !!errors[name], 'aria-describedby': describedBy })}
+        {hint && (
+          <p className="field__hint" id={`${id}-hint`}>
+            {hint}
+          </p>
+        )}
+        {errors[name] && (
+          <p className="field__error" id={`${id}-error`}>
+            {errors[name]}
+          </p>
+        )}
+      </div>
+    )
+  }
+  const optional = <span className="field__optional">(לא חובה)</span>
 
   return (
-    <Dialog title={section.addLabel} onClose={onClose} className="dialog--form">
+    <Dialog title={title} onClose={onClose} className="dialog--form">
       <form className="entry-form" onSubmit={handleSubmit} noValidate>
-        <div className="field">
-          <label htmlFor={ids.title}>
-            כותרת <span className="field__optional">(לא חובה)</span>
-          </label>
-          <input
-            id={ids.title}
-            type="text"
-            value={values.title}
-            onChange={update('title')}
-            maxLength={LIMITS.title}
-            aria-invalid={!!errors.title}
-            aria-describedby={describedBy('title')}
-          />
-          {errors.title && <p className="field__error" id={`${ids.title}-error`}>{errors.title}</p>}
-        </div>
+        {field('title', <>כותרת {optional}</>, (p) => (
+          <input {...p} type="text" value={values.title} onChange={update('title')} maxLength={LIMITS.title} />
+        ))}
 
-        <div className="field">
-          <label htmlFor={ids.content}>
-            תוכן <span aria-hidden="true">*</span>
-          </label>
-          <textarea
-            id={ids.content}
-            ref={contentRef}
-            className="work-text"
-            value={values.content}
-            onChange={update('content')}
-            rows={10}
-            required
-            aria-required="true"
-            aria-invalid={!!errors.content}
-            aria-describedby={describedBy('content')}
-            autoFocus
-          />
-          {errors.content && <p className="field__error" id={`${ids.content}-error`}>{errors.content}</p>}
+        {field(
+          'content',
+          hasImages ? <>תוכן {optional}</> : <>תוכן <span aria-hidden="true">*</span></>,
+          (p) => (
+            <textarea
+              {...p}
+              ref={contentRef}
+              className="work-text"
+              value={values.content}
+              onChange={update('content')}
+              rows={10}
+              required={!hasImages}
+              aria-required={!hasImages}
+              autoFocus
+            />
+          ),
+          hasImages ? 'לפריט זה מצורפות תמונות, ולכן אפשר להשאיר את התוכן ריק.' : undefined,
+        )}
+
+        <div className="field-row">
+          {field('postedAt', <>תאריך {optional}</>, (p) => (
+            <input {...p} type="date" value={values.postedAt} onChange={update('postedAt')} />
+          ))}
+          {field('author', 'שם המחבר', (p) => (
+            <input {...p} type="text" value={values.author} onChange={update('author')} maxLength={LIMITS.author} />
+          ))}
         </div>
 
         <div className="field-row">
-          <div className="field">
-            <label htmlFor={ids.postedAt}>
-              תאריך <span className="field__optional">(לא חובה)</span>
-            </label>
-            <input
-              id={ids.postedAt}
-              type="date"
-              value={values.postedAt}
-              onChange={update('postedAt')}
-              aria-invalid={!!errors.postedAt}
-              aria-describedby={describedBy('postedAt')}
-            />
-            {errors.postedAt && <p className="field__error" id={`${ids.postedAt}-error`}>{errors.postedAt}</p>}
-          </div>
-          <div className="field">
-            <label htmlFor={ids.author}>שם המחבר</label>
-            <input
-              id={ids.author}
-              type="text"
-              value={values.author}
-              onChange={update('author')}
-              maxLength={LIMITS.author}
-              aria-invalid={!!errors.author}
-              aria-describedby={describedBy('author')}
-            />
-            {errors.author && <p className="field__error" id={`${ids.author}-error`}>{errors.author}</p>}
-          </div>
+          {showLikes &&
+            field('likes', <>מספר לייקים {optional}</>, (p) => (
+              <input {...p} type="text" inputMode="numeric" pattern="[0-9]*" dir="ltr" value={values.likes} onChange={update('likes')} />
+            ))}
+          {field('sourceUrl', <>קישור למקור {optional}</>, (p) => (
+            <input {...p} type="url" dir="ltr" placeholder="https://" value={values.sourceUrl} onChange={update('sourceUrl')} />
+          ))}
         </div>
 
+        {editing && entry.source !== 'manual' && (
+          <p className="form-note">שדות שישונו כאן יישמרו גם אם הנתונים ייאספו שוב מהמקור.</p>
+        )}
+
         {needsPassword && (
-          <div className="field field--password">
-            <label htmlFor={ids.password}>סיסמת עריכה</label>
-            <input
-              id={ids.password}
-              ref={passwordRef}
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => {
-                setPassword(e.target.value)
-                setPasswordError(null)
-              }}
-              aria-invalid={!!passwordError}
-              aria-describedby={passwordError ? `${ids.password}-error` : undefined}
-            />
-            {passwordError && <p className="field__error" id={`${ids.password}-error`}>{passwordError}</p>}
-          </div>
+          <PasswordField
+            ref={passwordRef}
+            value={password}
+            error={passwordError}
+            onChange={(v) => {
+              setPassword(v)
+              setPasswordError(null)
+            }}
+          />
         )}
 
         {submitError && (

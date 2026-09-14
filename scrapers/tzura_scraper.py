@@ -45,6 +45,7 @@ from archive_utils import (  # noqa: E402
     RAW_DIR,
     Checkpoint,
     dumps_json,
+    load_exclusions,
     make_entry,
     normalize_content,
     normalize_single_line,
@@ -265,7 +266,10 @@ def run(args: argparse.Namespace) -> int:
     log.info("fetching artist page %s", artist_url(args.artist))
     listings = parse_artist_page(fetcher.get(artist_url(args.artist)))
     log.info("artist page lists %d works", len(listings))
-    queue = [w.work_id for w in listings]
+    excluded = {i.removeprefix("tzura-") for i in load_exclusions() if i.startswith("tzura-")}
+    queue = [w.work_id for w in listings if w.work_id not in excluded]
+    if excluded:
+        log.info("skipping %d work(s) deleted on the website", len(excluded))
     listed_titles = {w.work_id: w.title for w in listings}
 
     stats = {"created": 0, "updated": 0, "refreshed": 0, "unchanged": 0, "skipped": 0, "failed": 0, "notAuthor": 0}
@@ -293,7 +297,7 @@ def run(args: argparse.Namespace) -> int:
 
         # Cross-check: the random "לקט יצירות" list must not contain works absent from the full list.
         for rid in work.related_ids:
-            if rid not in listed_titles and rid not in queue:
+            if rid not in listed_titles and rid not in queue and rid not in excluded:
                 log.warning("work %s found via random sidebar but not in the artist list; queuing it", rid)
                 queue.append(rid)
                 extra_found.append(rid)

@@ -1,4 +1,4 @@
-/** Validation and construction of manual archive entries (mirrors scrapers/archive_utils.py). */
+/** Validation and construction of archive entries (mirrors scrapers/archive_utils.py). */
 
 export type Category = 'creation' | 'palindrome'
 
@@ -15,22 +15,32 @@ export const LIMITS = {
   title: 200,
   author: 100,
   content: 20000,
+  sourceUrl: 500,
+  likes: 10_000_000,
 }
+
+/** Fields a person can set on the website. Scrapers never overwrite fields listed in editedFields. */
+export const EDITABLE_FIELDS = ['title', 'content', 'postedAt', 'author', 'likes', 'sourceUrl'] as const
+export type EditableField = (typeof EDITABLE_FIELDS)[number]
 
 export interface ArchiveEntry {
   id: string
-  source: 'manual'
+  source: 'tzura' | 'facebook' | 'manual'
   category: Category
   author: string
   title: string | null
   content: string
   postedAt: string | null
-  sourceUrl: null
-  sourceId: null
-  scrapedAt: null
+  sourceUrl: string | null
+  sourceId: string | null
+  scrapedAt: string | null
   createdAt: string
   updatedAt: string
-  attachments: []
+  attachments: { type: 'image'; path: string; [key: string]: unknown }[]
+  likes?: number
+  editedAt?: string
+  editedFields?: EditableField[]
+  [key: string]: unknown
 }
 
 export interface ValidInput {
@@ -39,12 +49,16 @@ export interface ValidInput {
   content: string
   postedAt: string | null
   author: string
+  likes: number | null
+  sourceUrl: string | null
 }
 
 export type ValidationResult = { ok: true; value: ValidInput } | { ok: false; error: string }
 
 // Control characters except tab (\x09) and newline (\x0A).
 const CONTROL_CHARS = /[\u0000-\u0008\u000B-\u001F\u007F-\u007F]/g
+
+export const ENTRY_ID = /^(tzura|facebook|manual)-[A-Za-z0-9_-]{1,120}$/
 
 /** Same rules as the Python normalize_content: keep inner layout, trim blank edges. */
 export function normalizeContent(text: string): string {
@@ -72,7 +86,22 @@ function isValidPostedAt(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(value) && !Number.isNaN(Date.parse(value))
 }
 
-export function validateInput(body: unknown): ValidationResult {
+function isValidHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' || url.protocol === 'http:'
+  } catch {
+    return false
+  }
+}
+
+const isBlank = (v: unknown) => v === undefined || v === null || v === ''
+
+/**
+ * Validate a create/edit payload. `allowEmptyContent` is used when editing an entry that has
+ * images (an image-only Facebook post legitimately has no text).
+ */
+export function validateInput(body: unknown, options: { allowEmptyContent?: boolean } = {}): ValidationResult {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return { ok: false, error: 'גוף הבקשה אינו תקין' }
   const b = body as Record<string, unknown>
 
@@ -80,29 +109,47 @@ export function validateInput(body: unknown): ValidationResult {
 
   if (typeof b.content !== 'string') return { ok: false, error: 'יש להזין תוכן' }
   const content = normalizeContent(b.content)
-  if (!content) return { ok: false, error: 'יש להזין תוכן' }
+  if (!content && !options.allowEmptyContent) return { ok: false, error: 'יש להזין תוכן' }
   if (content.length > LIMITS.content) return { ok: false, error: 'התוכן ארוך מדי' }
 
-  if (b.title !== undefined && b.title !== null && typeof b.title !== 'string') return { ok: false, error: 'כותרת לא תקינה' }
+  if (!isBlank(b.title) && typeof b.title !== 'string') return { ok: false, error: 'כותרת לא תקינה' }
   const title = typeof b.title === 'string' ? normalizeSingleLine(b.title) || null : null
   if (title && title.length > LIMITS.title) return { ok: false, error: 'הכותרת ארוכה מדי' }
 
-  if (b.author !== undefined && b.author !== null && typeof b.author !== 'string') return { ok: false, error: 'שם מחבר לא תקין' }
+  if (!isBlank(b.author) && typeof b.author !== 'string') return { ok: false, error: 'שם מחבר לא תקין' }
   const author = (typeof b.author === 'string' && normalizeSingleLine(b.author)) || DEFAULT_AUTHOR
   if (author.length > LIMITS.author) return { ok: false, error: 'שם המחבר ארוך מדי' }
 
   let postedAt: string | null = null
-  if (b.postedAt !== undefined && b.postedAt !== null && b.postedAt !== '') {
+  if (!isBlank(b.postedAt)) {
     if (typeof b.postedAt !== 'string' || !isValidPostedAt(b.postedAt)) return { ok: false, error: 'תאריך לא תקין' }
     postedAt = b.postedAt
   }
 
-  return { ok: true, value: { category: b.category, title, content, postedAt, author } }
+  let likes: number | null = null
+  if (!isBlank(b.likes)) {
+    if (typeof b.likes !== 'number' || !Number.isInteger(b.likes) || b.likes < 0 || b.likes > LIMITS.likes) {
+      return { ok: false, error: 'מספר הלייקים אינו תקין' }
+    }
+    likes = b.likes
+  }
+
+  let sourceUrl: string | null = null
+  if (!isBlank(b.sourceUrl)) {
+    if (typeof b.sourceUrl !== 'string') return { ok: false, error: 'קישור המקור אינו תקין' }
+    const trimmed = b.sourceUrl.trim()
+    if (trimmed.length > LIMITS.sourceUrl || !isValidHttpUrl(trimmed)) return { ok: false, error: 'קישור המקור אינו תקין' }
+    sourceUrl = trimmed
+  }
+
+  return { ok: true, value: { category: b.category, title, content, postedAt, author, likes, sourceUrl } }
 }
 
+export const isoNow = (now: Date) => now.toISOString().replace(/\.\d{3}Z$/, 'Z')
+
 export function buildEntry(input: ValidInput, uuid: string, now: Date): ArchiveEntry {
-  const timestamp = now.toISOString().replace(/\.\d{3}Z$/, 'Z')
-  return {
+  const timestamp = isoNow(now)
+  const entry: ArchiveEntry = {
     id: `manual-${uuid}`,
     source: 'manual',
     category: input.category,
@@ -110,22 +157,108 @@ export function buildEntry(input: ValidInput, uuid: string, now: Date): ArchiveE
     title: input.title,
     content: input.content,
     postedAt: input.postedAt,
-    sourceUrl: null,
+    sourceUrl: input.sourceUrl,
     sourceId: null,
     scrapedAt: null,
     createdAt: timestamp,
     updatedAt: timestamp,
     attachments: [],
   }
+  if (input.likes !== null) entry.likes = input.likes
+  return entry
 }
 
-export const entryPath = (entry: ArchiveEntry) => `archive/${CATEGORY_DIRS[entry.category]}/${entry.id}.json`
+/** Minimal shape check for an entry file read back from the repository. */
+export function parseStoredEntry(text: string): ArchiveEntry | null {
+  try {
+    const value = JSON.parse(text) as Partial<ArchiveEntry>
+    if (!value || typeof value !== 'object' || typeof value.id !== 'string' || typeof value.content !== 'string') return null
+    if (value.category !== 'creation' && value.category !== 'palindrome') return null
+    return { attachments: [], ...value } as ArchiveEntry
+  } catch {
+    return null
+  }
+}
 
-export function commitMessage(entry: ArchiveEntry): string {
-  const kind = entry.category === 'creation' ? 'creation' : 'palindrome'
-  if (!entry.title) return `Add ${kind} entry`
-  const title = entry.title.length > 72 ? `${entry.title.slice(0, 69)}...` : entry.title
-  return `Add ${kind}: ${title}`
+/**
+ * Apply an edit. Only editable fields change; id, source, sourceId, attachments, createdAt, etc.
+ * are kept. Changed fields are added to `editedFields` so scrapers will not overwrite them.
+ */
+export function applyEdit(existing: ArchiveEntry, input: ValidInput, now: Date): { entry: ArchiveEntry; changed: EditableField[] } {
+  const next: Record<EditableField, unknown> = {
+    title: input.title,
+    content: input.content,
+    postedAt: input.postedAt,
+    author: input.author,
+    likes: input.likes,
+    sourceUrl: input.sourceUrl,
+  }
+  const current = (field: EditableField) => (field === 'likes' ? (existing.likes ?? null) : (existing[field] ?? null))
+  const changed = EDITABLE_FIELDS.filter((field) => next[field] !== current(field))
+  if (changed.length === 0) return { entry: existing, changed }
+
+  const entry: ArchiveEntry = { ...existing }
+  for (const field of changed) {
+    if (field === 'likes') {
+      if (input.likes === null) delete entry.likes
+      else entry.likes = input.likes
+    } else {
+      ;(entry as Record<string, unknown>)[field] = next[field]
+    }
+  }
+  const timestamp = isoNow(now)
+  entry.updatedAt = timestamp
+  entry.editedAt = timestamp
+  entry.editedFields = EDITABLE_FIELDS.filter((f) => changed.includes(f) || existing.editedFields?.includes(f))
+  return { entry, changed }
+}
+
+export const entryPath = (entry: Pick<ArchiveEntry, 'id' | 'category'>) => `archive/${CATEGORY_DIRS[entry.category]}/${entry.id}.json`
+
+/** Raw source snapshot stored next to scraped entries, if any. */
+export function rawSnapshotPath(entry: ArchiveEntry): string | null {
+  if (entry.source === 'tzura') return `archive/raw/tzura/${entry.id}.html`
+  if (entry.source === 'facebook') return `archive/raw/facebook/${entry.id}.json`
+  return null
+}
+
+const kindLabel = (category: Category) => (category === 'creation' ? 'creation' : 'palindrome')
+const shortTitle = (title: string) => (title.length > 72 ? `${title.slice(0, 69)}...` : title)
+
+export function commitMessage(entry: ArchiveEntry, action: 'Add' | 'Edit' | 'Delete' = 'Add'): string {
+  const kind = kindLabel(entry.category)
+  if (entry.title) return `${action} ${kind}: ${shortTitle(entry.title)}`
+  return action === 'Add' ? `Add ${kind} entry` : `${action} ${kind} entry ${entry.id}`
+}
+
+export interface Exclusion {
+  id: string
+  source: string
+  sourceId: string | null
+  deletedAt: string
+  title: string | null
+}
+
+/**
+ * archive/excluded.json lists deleted scraped items so scrapers never re-add them.
+ * Returns the updated file text (or null when the entry was manual and needs no record).
+ */
+export function addExclusion(existingText: string | null, entry: ArchiveEntry, now: Date): string | null {
+  if (entry.source === 'manual') return null
+  let data: { entries: Exclusion[] } = { entries: [] }
+  if (existingText) {
+    try {
+      const parsed = JSON.parse(existingText) as { entries?: unknown }
+      if (Array.isArray(parsed.entries)) data = { entries: parsed.entries as Exclusion[] }
+    } catch {
+      // A corrupt file is replaced; git history keeps the old one.
+    }
+  }
+  if (!data.entries.some((e) => e.id === entry.id)) {
+    data.entries.push({ id: entry.id, source: entry.source, sourceId: entry.sourceId, deletedAt: isoNow(now), title: entry.title })
+  }
+  data.entries.sort((a, b) => a.id.localeCompare(b.id))
+  return `${JSON.stringify(data, null, 2)}\n`
 }
 
 /** Pretty JSON with readable Hebrew and a trailing newline, like the Python writer. */

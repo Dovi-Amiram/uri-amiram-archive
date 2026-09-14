@@ -59,6 +59,7 @@ from archive_utils import (  # noqa: E402
     STATE_DIR,
     Checkpoint,
     dumps_json,
+    load_exclusions,
     make_entry,
     normalize_content,
     normalize_single_line,
@@ -519,10 +520,12 @@ def run(args: argparse.Namespace) -> int:
     expected_names = {DEFAULT_AUTHOR, *(args.author_name or [])}
 
     collected: dict[str, FbPost] = {}
-    # In --new-only mode these posts are neither re-saved nor refreshed.
+    # Posts deleted on the website are never re-added.
+    excluded_ids = {i.removeprefix("facebook-") for i in load_exclusions() if i.startswith("facebook-")}
+    # In --new-only mode archived posts are neither re-saved nor refreshed.
     skip_ids = saved_post_ids() if args.new_only else set()
     if args.new_only:
-        log.info("new-only mode: %d posts already archived", len(skip_ids))
+        log.info("new-only mode: %d posts already archived, %d excluded", len(skip_ids), len(excluded_ids))
 
     def absorb(posts: list[FbPost]) -> None:
         for post in posts:
@@ -609,14 +612,14 @@ def run(args: argparse.Namespace) -> int:
             if args.max_posts and len(mine) >= args.max_posts:
                 break
             if args.new_only:
-                new_count = sum(1 for p in mine if p.post_id not in skip_ids)
+                new_count = sum(1 for p in mine if p.post_id not in skip_ids and p.post_id not in excluded_ids)
                 rounds_without_new = 0 if new_count > last_new_count else rounds_without_new + 1
                 last_new_count = new_count
-                if should_stop_new_only([p.post_id for p in mine], skip_ids, rounds_without_new, args.stop_after_known):
+                if should_stop_new_only([p.post_id for p in mine], skip_ids | excluded_ids, rounds_without_new, args.stop_after_known):
                     log.info("reached already-archived posts (%d new found); stopping", new_count)
                     break
             if rounds % 10 == 0 and not args.dry_run:
-                _save_posts(collected, expected_names, checkpoint, args, final=False, request_context=context.request, skip_ids=skip_ids)
+                _save_posts(collected, expected_names, checkpoint, args, final=False, request_context=context.request, skip_ids=skip_ids, excluded_ids=excluded_ids)
             page.mouse.wheel(0, random.randint(600, 1100))
             page.wait_for_timeout(human_pause(args.scroll_pause_ms))
 
@@ -625,7 +628,7 @@ def run(args: argparse.Namespace) -> int:
         # Save while the browser is still open: photo downloads use its session.
         result = _save_posts(
             collected, expected_names, checkpoint, args, final=True, saved_before=saved_before,
-            request_context=context.request, skip_ids=skip_ids,
+            request_context=context.request, skip_ids=skip_ids, excluded_ids=excluded_ids,
         )
         context.close()
     return result
@@ -635,9 +638,9 @@ def _record(post: FbPost) -> dict:
     return vars(post) | {"origin": sorted(post.origin), "photos": [vars(ph) for ph in post.photos]}
 
 
-def _save_posts(collected, expected_names, checkpoint, args, final: bool, saved_before=None, request_context=None, skip_ids=frozenset()) -> int:
+def _save_posts(collected, expected_names, checkpoint, args, final: bool, saved_before=None, request_context=None, skip_ids=frozenset(), excluded_ids=frozenset()) -> int:
     scraped_at = now_iso()
-    stats = {"created": 0, "updated": 0, "refreshed": 0, "unchanged": 0, "alreadyArchived": 0, "otherAuthor": 0, "noText": 0, "withPhotos": 0}
+    stats = {"created": 0, "updated": 0, "refreshed": 0, "unchanged": 0, "alreadyArchived": 0, "excluded": 0, "otherAuthor": 0, "noText": 0, "withPhotos": 0}
     examples = []
     others = []
     ordered = sorted(collected.values(), key=lambda p: p.created_at or "", reverse=True)
@@ -649,6 +652,9 @@ def _save_posts(collected, expected_names, checkpoint, args, final: bool, saved_
         if not is_target_author(post, expected_names):
             stats["otherAuthor"] += 1
             others.append((post.post_id, post.author_id, post.author_name))
+            continue
+        if post.post_id in excluded_ids:
+            stats["excluded"] += 1  # deleted on the website
             continue
         if post.post_id in skip_ids:
             stats["alreadyArchived"] += 1

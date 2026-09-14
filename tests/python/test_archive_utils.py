@@ -143,3 +143,30 @@ def test_entries_without_likes_do_not_get_the_field():
     entry = au.make_entry(source="tzura", category="creation", source_id="3", content="x")
     assert "likes" not in entry
     assert "likes" not in au.order_fields(entry)
+
+
+def test_edited_fields_are_never_overwritten_by_scrapers(tmp_path):
+    original = au.make_entry(source="facebook", category="palindrome", source_id="7", content="ישן", likes=3)
+    au.upsert_entry(original, tmp_path)
+    path = tmp_path / "palindromes" / "facebook-7.json"
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    saved.update(content="תוקן ידנית", likes=50, editedAt="2026-09-15T08:00:00Z", editedFields=["content", "likes"])
+    au.write_json_atomic(path, saved)
+
+    rescraped = au.make_entry(source="facebook", category="palindrome", source_id="7", content="ישן", likes=9, posted_at="2020-01-01")
+    assert au.upsert_entry(rescraped, tmp_path) == "updated"  # postedAt was not edited, so it may fill in
+    after = json.loads(path.read_text(encoding="utf-8"))
+    assert after["content"] == "תוקן ידנית"
+    assert after["likes"] == 50
+    assert after["postedAt"] == "2020-01-01"
+    assert au.validate_entry(after) == []
+    assert any("editedFields" in e for e in au.validate_entry(dict(after, editedFields=["id"])))
+
+
+def test_load_exclusions(tmp_path):
+    path = tmp_path / "excluded.json"
+    assert au.load_exclusions(path) == set()
+    au.write_json_atomic(path, {"entries": [{"id": "facebook-1", "source": "facebook"}, {"id": "tzura-2", "source": "tzura"}]})
+    assert au.load_exclusions(path) == {"facebook-1", "tzura-2"}
+    assert au.validate_exclusions({"entries": [{"id": 5}]})
+    assert au.validate_exclusions({"entries": []}) == []

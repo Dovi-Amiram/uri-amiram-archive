@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import type { ArchiveEntry } from '../types/archive'
-import { formatDate, makePreview, normalizeForSearch, parseArchive, parseEntry, searchEntries, sortEntries } from './archive'
+import {
+  applyPendingChanges,
+  formatDate,
+  isChangeLive,
+  makePreview,
+  normalizeForSearch,
+  parseArchive,
+  parseEntry,
+  searchEntries,
+  sortEntries,
+} from './archive'
 
 const entry = (overrides: Partial<ArchiveEntry>): ArchiveEntry => ({
   id: 'x',
@@ -109,41 +119,67 @@ describe('searchEntries', () => {
 
 describe('sortEntries', () => {
   const list = [
-    entry({ id: 'old', title: 'ב', postedAt: '2003-05-25' }),
+    entry({ id: 'old', title: 'ב', postedAt: '2003-05-25', likes: 5 }),
     entry({ id: 'undated-b', title: 'ת' }),
-    entry({ id: 'new', title: 'ג', postedAt: '2014-08-05' }),
-    entry({ id: 'untitled', title: null, postedAt: null }),
-    entry({ id: 'datetime', title: 'א', postedAt: '2026-09-13T17:18:23Z' }),
+    entry({ id: 'new', title: 'ג', postedAt: '2014-08-05', likes: 59 }),
+    entry({ id: 'untitled', title: null, postedAt: null, likes: 5 }),
+    entry({ id: 'datetime', title: 'א', postedAt: '2026-09-13T17:18:23Z', likes: 0 }),
     entry({ id: 'undated-a', title: 'א' }),
   ]
+  const ids = (field: 'date' | 'title' | 'likes', direction: 'asc' | 'desc') => sortEntries(list, field, direction).map((e) => e.id)
 
-  it('newest first, undated after dated', () => {
-    expect(sortEntries(list, 'newest').map((e) => e.id)).toEqual(['datetime', 'new', 'old', 'undated-a', 'undated-b', 'untitled'])
+  it('by date, newest first, undated last', () => {
+    expect(ids('date', 'desc')).toEqual(['datetime', 'new', 'old', 'undated-a', 'undated-b', 'untitled'])
   })
 
-  it('oldest first, undated still after dated', () => {
-    expect(sortEntries(list, 'oldest').map((e) => e.id)).toEqual(['old', 'new', 'datetime', 'undated-a', 'undated-b', 'untitled'])
+  it('by date reversed, undated still last', () => {
+    expect(ids('date', 'asc')).toEqual(['old', 'new', 'datetime', 'undated-a', 'undated-b', 'untitled'])
   })
 
-  it('by Hebrew title with untitled last', () => {
-    expect(sortEntries(list, 'title').map((e) => e.id)).toEqual(['datetime', 'undated-a', 'old', 'new', 'undated-b', 'untitled'])
+  it('by title both ways, untitled last', () => {
+    expect(ids('title', 'asc')).toEqual(['datetime', 'undated-a', 'old', 'new', 'undated-b', 'untitled'])
+    expect(ids('title', 'desc')).toEqual(['undated-b', 'new', 'old', 'datetime', 'undated-a', 'untitled'])
   })
 
-  it('by likes, most first, unknown last, ties newest first', () => {
-    const liked = [
-      entry({ id: 'a', likes: 5, postedAt: '2020-01-01' }),
-      entry({ id: 'b', likes: 59, postedAt: '2019-01-01' }),
-      entry({ id: 'c', likes: null, postedAt: '2026-01-01' }),
-      entry({ id: 'd', likes: 5, postedAt: '2024-01-01' }),
-      entry({ id: 'e', likes: 0, postedAt: '2025-01-01' }),
-    ]
-    expect(sortEntries(liked, 'likes').map((e) => e.id)).toEqual(['b', 'd', 'a', 'e', 'c'])
+  it('by likes both ways, unknown last, ties newest first', () => {
+    expect(ids('likes', 'desc')).toEqual(['new', 'old', 'untitled', 'datetime', 'undated-a', 'undated-b'])
+    expect(ids('likes', 'asc')).toEqual(['datetime', 'old', 'untitled', 'new', 'undated-a', 'undated-b'])
   })
 
   it('does not mutate the input', () => {
     const copy = [...list]
-    sortEntries(list, 'title')
+    sortEntries(list, 'title', 'asc')
     expect(list).toEqual(copy)
+  })
+})
+
+describe('pending changes', () => {
+  const a = entry({ id: 'a', updatedAt: '1' })
+  const b = entry({ id: 'b', updatedAt: '1' })
+  const pal = entry({ id: 'p', category: 'palindrome' })
+
+  it('applies creates, updates and deletes for the right category', () => {
+    const changes = [
+      { kind: 'create' as const, entry: entry({ id: 'new' }) },
+      { kind: 'update' as const, entry: { ...a, content: 'ערוך', updatedAt: '2' } },
+      { kind: 'delete' as const, entry: b },
+      { kind: 'delete' as const, entry: pal },
+    ]
+    const result = applyPendingChanges([a, b], changes, 'creation')
+    expect(result.map((e) => [e.id, e.content])).toEqual([
+      ['a', 'ערוך'],
+      ['new', 'תוכן'],
+    ])
+  })
+
+  it('detects when a deployment reflects a change', () => {
+    const updated = { ...a, updatedAt: '2' }
+    expect(isChangeLive({ kind: 'create', entry: a }, [a])).toBe(true)
+    expect(isChangeLive({ kind: 'create', entry: a }, [])).toBe(false)
+    expect(isChangeLive({ kind: 'update', entry: updated }, [a])).toBe(false)
+    expect(isChangeLive({ kind: 'update', entry: updated }, [updated])).toBe(true)
+    expect(isChangeLive({ kind: 'delete', entry: a }, [a])).toBe(false)
+    expect(isChangeLive({ kind: 'delete', entry: a }, [b])).toBe(true)
   })
 })
 

@@ -3,7 +3,7 @@ import { sectionFor } from '../types/archive'
 
 export function StatusBanner({ status, onDismiss }: { status: PublishStatus | null; onDismiss: () => void }) {
   if (!status) return null
-  const message = sectionFor(status.category).messages[status.kind]
+  const message = sectionFor(status.category).messages[status.change][status.kind]
   return (
     <div className={`status-banner status-banner--${status.kind}`} role="status" aria-live="polite">
       {status.kind === 'publishing' && <span className="spinner" aria-hidden="true" />}

@@ -1,4 +1,4 @@
-import type { ArchiveEntry, Category, ImageAttachment, SortMode, Source } from '../types/archive'
+import type { ArchiveEntry, Category, ChangeKind, ImageAttachment, SortDirection, SortField, Source } from '../types/archive'
 
 const SOURCES: readonly Source[] = ['tzura', 'facebook', 'manual']
 const CATEGORIES: readonly Category[] = ['creation', 'palindrome']
@@ -64,28 +64,66 @@ export function parseArchive(json: unknown, category?: Category): ArchiveEntry[]
 
 const hebrewCollator = new Intl.Collator('he')
 
-/** Dated entries by date (newest or oldest first), undated entries always afterwards. */
-export function sortEntries(entries: readonly ArchiveEntry[], mode: SortMode): ArchiveEntry[] {
-  const byTitle = (a: ArchiveEntry, b: ArchiveEntry) => {
-    if (!a.title !== !b.title) return a.title ? -1 : 1
-    return hebrewCollator.compare(a.title ?? '', b.title ?? '') || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)
+/**
+ * Sort by date, title or likes in either direction. Entries missing the sort value (no date,
+ * no title, no like count) always come last, in both directions. Ties are broken by date
+ * (newest first), then title, then id, so the order is stable and predictable.
+ */
+export function sortEntries(entries: readonly ArchiveEntry[], field: SortField, direction: SortDirection): ArchiveEntry[] {
+  const sign = direction === 'desc' ? -1 : 1
+  const byDateDesc = (a: ArchiveEntry, b: ArchiveEntry) => {
+    if (a.postedAt && b.postedAt) return b.postedAt.localeCompare(a.postedAt)
+    return a.postedAt ? -1 : b.postedAt ? 1 : 0
   }
-  const list = [...entries]
-  if (mode === 'title') return list.sort(byTitle)
-  if (mode === 'likes') {
-    const newestFirst = sortEntries(entries, 'newest')
-    const rank = new Map(newestFirst.map((e, i) => [e.id, i]))
-    // Most reactions first; entries without a count last; ties keep newest-first order.
-    return list.sort((a, b) => (b.likes ?? -1) - (a.likes ?? -1) || rank.get(a.id)! - rank.get(b.id)!)
+  const byTitleAsc = (a: ArchiveEntry, b: ArchiveEntry) => {
+    if (a.title && b.title) return hebrewCollator.compare(a.title, b.title)
+    return a.title ? -1 : b.title ? 1 : 0
   }
-  const direction = mode === 'newest' ? -1 : 1
-  return list.sort((a, b) => {
-    if (a.postedAt && b.postedAt) {
-      return direction * a.postedAt.localeCompare(b.postedAt) || a.id.localeCompare(b.id)
+  const tieBreak = (a: ArchiveEntry, b: ArchiveEntry) => byDateDesc(a, b) || byTitleAsc(a, b) || a.id.localeCompare(b.id)
+
+  const value = (e: ArchiveEntry): string | number | null =>
+    field === 'date' ? e.postedAt : field === 'title' ? e.title : e.likes
+  const compareValues = (x: string | number, y: string | number) =>
+    typeof x === 'number' && typeof y === 'number'
+      ? x - y
+      : field === 'title'
+        ? hebrewCollator.compare(String(x), String(y))
+        : String(x).localeCompare(String(y))
+
+  return [...entries].sort((a, b) => {
+    const va = value(a)
+    const vb = value(b)
+    if (va === null || vb === null) {
+      if (va !== vb) return va === null ? 1 : -1
+      return tieBreak(a, b)
     }
-    if (a.postedAt || b.postedAt) return a.postedAt ? -1 : 1
-    return byTitle(a, b)
+    return sign * compareValues(va, vb) || tieBreak(a, b)
   })
+}
+
+export interface PendingChange {
+  kind: ChangeKind
+  entry: ArchiveEntry
+}
+
+/** Show saved-but-not-yet-deployed changes on top of the published entries. */
+export function applyPendingChanges(published: readonly ArchiveEntry[], changes: readonly PendingChange[], category: Category): ArchiveEntry[] {
+  const relevant = changes.filter((c) => c.entry.category === category)
+  const deleted = new Set(relevant.filter((c) => c.kind === 'delete').map((c) => c.entry.id))
+  const replaced = new Map(relevant.filter((c) => c.kind !== 'delete').map((c) => [c.entry.id, c.entry]))
+  const result = published.filter((e) => !deleted.has(e.id)).map((e) => replaced.get(e.id) ?? e)
+  for (const [id, entry] of replaced) {
+    if (!deleted.has(id) && !published.some((e) => e.id === id)) result.push(entry)
+  }
+  return result
+}
+
+/** Whether a deployed index already reflects a change. */
+export function isChangeLive(change: PendingChange, live: readonly ArchiveEntry[]): boolean {
+  const found = live.find((e) => e.id === change.entry.id)
+  if (change.kind === 'delete') return !found
+  if (change.kind === 'create') return !!found
+  return !!found && found.updatedAt === change.entry.updatedAt
 }
 
 // Hebrew cantillation + niqqud marks, so "הנכסף" finds "הנִכסף".

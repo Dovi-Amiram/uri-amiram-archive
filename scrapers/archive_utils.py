@@ -60,6 +60,8 @@ FIELD_ORDER = (
     "updatedAt",
     "attachments",
     "likes",
+    "editedAt",
+    "editedFields",
 )
 REQUIRED_FIELDS = ("id", "source", "category", "author", "content", "createdAt", "updatedAt")
 # Fields that describe the work itself; a change in these means the entry was really updated.
@@ -67,8 +69,12 @@ CONTENT_FIELDS = ("source", "category", "author", "title", "content", "postedAt"
 # Source metadata that changes over time (e.g. Facebook reactions). Refreshed without moving updatedAt.
 METADATA_FIELDS = ("likes",)
 # Optional fields: may be absent from older files.
-OPTIONAL_FIELDS = ("likes",)
+OPTIONAL_FIELDS = ("likes", "editedAt", "editedFields")
+# Fields a person may change on the website (worker/src/entry.ts EDITABLE_FIELDS). Once edited,
+# they are listed in an entry's "editedFields" and scrapers never overwrite them.
+EDITABLE_FIELDS = ("title", "content", "postedAt", "author", "likes", "sourceUrl")
 ATTACHMENTS_DIR = ARCHIVE_DIR / "attachments"
+EXCLUSIONS_FILE = ARCHIVE_DIR / "excluded.json"
 
 
 class ArchiveEntry(TypedDict):
@@ -86,6 +92,8 @@ class ArchiveEntry(TypedDict):
     updatedAt: str
     attachments: list[Any]
     likes: NotRequired[int | None]
+    editedAt: NotRequired[str]
+    editedFields: NotRequired[list[str]]
 
 
 # --------------------------------------------------------------------------- logging
@@ -278,7 +286,10 @@ def validate_entry(entry: Any) -> list[str]:
     )
     if isinstance(entry.get("content"), str) and not entry["content"].strip() and not has_images:
         errors.append("content is empty")
-    for key in ("postedAt", "scrapedAt", "createdAt", "updatedAt"):
+    edited = entry.get("editedFields")
+    if edited is not None and (not isinstance(edited, list) or any(f not in EDITABLE_FIELDS for f in edited)):
+        errors.append(f"editedFields must be a list of {EDITABLE_FIELDS}")
+    for key in ("postedAt", "scrapedAt", "createdAt", "updatedAt", "editedAt"):
         value = entry.get(key)
         if isinstance(value, str) and not is_valid_iso(value):
             errors.append(f"field {key!r} is not a valid ISO date: {value!r}")
@@ -386,7 +397,10 @@ def upsert_entry(entry: ArchiveEntry, archive_dir: Path = ARCHIVE_DIR, force: bo
 
     existing = read_json(path)
     merged = dict(existing)
+    protected = set(existing.get("editedFields") or [])  # edited on the website: keep as is
     for key in CONTENT_FIELDS:
+        if key in protected:
+            continue
         new_value = entry.get(key)
         if new_value is None and existing.get(key) is not None:
             continue  # the source no longer shows it; keep what we archived
@@ -395,7 +409,7 @@ def upsert_entry(entry: ArchiveEntry, archive_dir: Path = ARCHIVE_DIR, force: bo
     merged["createdAt"] = existing.get("createdAt") or entry["createdAt"]
 
     for key in METADATA_FIELDS:
-        if entry.get(key) is not None:
+        if entry.get(key) is not None and key not in protected:
             merged[key] = entry[key]
 
     changed = any(merged.get(k) != existing.get(k) for k in CONTENT_FIELDS)
@@ -408,6 +422,25 @@ def upsert_entry(entry: ArchiveEntry, archive_dir: Path = ARCHIVE_DIR, force: bo
     merged["updatedAt"] = entry["updatedAt"]
     write_json_atomic(path, order_fields(merged))
     return "updated"
+
+
+def load_exclusions(path: Path | None = None) -> set[str]:
+    """Entry ids deleted on the website (archive/excluded.json). Scrapers must not re-add them."""
+    path = path or EXCLUSIONS_FILE
+    if not path.exists():
+        return set()
+    data = read_json(path)
+    return {e["id"] for e in data.get("entries", []) if isinstance(e, dict) and isinstance(e.get("id"), str)}
+
+
+def validate_exclusions(data: Any) -> list[str]:
+    if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
+        return ['must be an object with an "entries" list']
+    errors = []
+    for i, item in enumerate(data["entries"]):
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str) or item.get("source") not in SOURCES:
+            errors.append(f"entries[{i}] needs a string id and a valid source")
+    return errors
 
 
 # --------------------------------------------------------------------------- checkpoints

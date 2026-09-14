@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ArchiveEntry, Category } from '../types/archive'
+import type { ArchiveEntry, Category, ChangeKind } from '../types/archive'
+import { isChangeLive, type PendingChange } from '../utils/archive'
 import { fetchEntries, fetchVersion } from '../utils/data'
 
 export const POLL_INTERVAL_MS = 10_000
@@ -7,16 +8,17 @@ export const POLL_TIMEOUT_MS = 3 * 60_000
 
 export interface PublishStatus {
   kind: 'publishing' | 'published' | 'delayed'
+  change: ChangeKind
   category: Category
 }
 
 /**
- * After a successful save the entry is committed to GitHub, but the site only shows it once
- * GitHub Actions has rebuilt and GitHub Pages has deployed. Meanwhile the entry is shown
- * locally as "pending", and version.json is polled for a limited time.
+ * A saved change (create / update / delete) is committed to GitHub, but the site only reflects
+ * it after GitHub Actions rebuilds and Pages deploys. Until then the change is applied locally
+ * ("pending") and version.json is polled for a limited time.
  */
 export function usePublishWatcher(currentBuildId: string | null, reload: () => Promise<string | null>) {
-  const [pending, setPending] = useState<ArchiveEntry[]>([])
+  const [pending, setPending] = useState<PendingChange[]>([])
   const [status, setStatus] = useState<PublishStatus | null>(null)
   const timers = useRef(new Set<number>())
   const buildRef = useRef(currentBuildId)
@@ -28,9 +30,11 @@ export function usePublishWatcher(currentBuildId: string | null, reload: () => P
   }, [])
 
   const watch = useCallback(
-    (entry: ArchiveEntry) => {
-      setPending((list) => [entry, ...list.filter((e) => e.id !== entry.id)])
-      setStatus({ kind: 'publishing', category: entry.category })
+    (kind: ChangeKind, entry: ArchiveEntry) => {
+      const change: PendingChange = { kind, entry }
+      // A newer change to the same entry replaces an older pending one.
+      setPending((list) => [change, ...list.filter((c) => c.entry.id !== entry.id)])
+      setStatus({ kind: 'publishing', change: kind, category: entry.category })
       const startedAt = Date.now()
       let lastSeenBuild = buildRef.current
 
@@ -40,10 +44,10 @@ export function usePublishWatcher(currentBuildId: string | null, reload: () => P
           lastSeenBuild = version.buildId
           try {
             const live = await fetchEntries(entry.category, version.buildId)
-            if (live.some((e) => e.id === entry.id)) {
+            if (isChangeLive(change, live)) {
               await reload()
-              setPending((list) => list.filter((e) => e.id !== entry.id))
-              setStatus({ kind: 'published', category: entry.category })
+              setPending((list) => list.filter((c) => c !== change))
+              setStatus({ kind: 'published', change: kind, category: entry.category })
               return
             }
           } catch {
@@ -51,7 +55,7 @@ export function usePublishWatcher(currentBuildId: string | null, reload: () => P
           }
         }
         if (Date.now() - startedAt >= POLL_TIMEOUT_MS) {
-          setStatus({ kind: 'delayed', category: entry.category })
+          setStatus({ kind: 'delayed', change: kind, category: entry.category })
           return
         }
         schedule()

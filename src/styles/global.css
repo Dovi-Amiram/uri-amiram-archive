@@ -721,3 +721,92 @@ a.entry-meta__source:hover {
     padding-inline: 1rem;
   }
 }
+
+/* ---------------------------------------------------------------- edit / delete */
+
+.button--small {
+  min-height: 2.4rem;
+  padding: 0.35rem 0.9rem;
+  font-size: 0.95rem;
+}
+
+.button--danger {
+  color: #fff;
+  background: #a1260f;
+  border-color: #a1260f;
+}
+
+.button--danger:hover {
+  background: #7f1d0b;
+  border-color: #7f1d0b;
+}
+
+.button--danger-outline {
+  color: #a1260f;
+  border-color: #e3b8ae;
+}
+
+.button--danger-outline:hover {
+  border-color: #a1260f;
+}
+
+.reader__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+
+.sort-direction {
+  min-height: 2.75rem;
+  padding-inline: 0.8rem;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.sort-direction__icon {
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.field__hint {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+}
+
+.dialog--confirm {
+  width: min(100% - 1.5rem, 32rem);
+}
+
+.confirm__question {
+  margin: 0.25rem 0 0.75rem;
+  font-size: 1.1rem;
+}
+
+.confirm__preview {
+  margin: 0 0 1rem;
+  padding: 0.75rem 1rem;
+  background: var(--paper);
+  border-inline-start: 3px solid var(--line);
+  border-radius: 6px;
+  font-size: 1rem;
+}
+
+@media (max-width: 36rem) {
+  .dialog--confirm {
+    height: auto;
+    margin: auto;
+    border-radius: 14px;
+  }
+
+  .toolbar__sort {
+    flex-wrap: wrap;
+  }
+}
+
+.dialog--confirm .form-actions {
+  margin-top: 1rem;
+}

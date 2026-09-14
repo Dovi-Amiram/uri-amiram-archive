@@ -7,19 +7,22 @@ JSON file to GitHub. It has no database; GitHub is the storage.
 | --- | --- | --- |
 | `POST /api/login` `{ "password": "…" }` | — | Returns `{ token, expiresAt }`, a 2-hour HMAC-signed session token |
 | `POST /api/entries` | `Authorization: Bearer <token>` | Validates and commits `archive/<creations|palindromes>/manual-<uuid>.json` |
+| `PUT /api/entries/:id` | `Authorization: Bearer <token>` | Edits title/content/postedAt/author/likes/sourceUrl of an existing entry (body includes `category`); records `editedAt`/`editedFields` |
+| `DELETE /api/entries/:id?category=…` | `Authorization: Bearer <token>` | Deletes the entry, its images and raw snapshot in one commit; scraped items are added to `archive/excluded.json` |
 | `GET /api/health` | — | `{ "ok": true }` |
 
 Entry body:
 
 ```json
-{ "category": "creation", "title": "…", "content": "…", "postedAt": "2026-09-14", "author": "אורי עמירם" }
+{ "category": "creation", "title": "…", "content": "…", "postedAt": "2026-09-14", "author": "אורי עמירם", "likes": 12, "sourceUrl": "https://…" }
 ```
 
 Server-side rules: `category` must be `creation` or `palindrome`; `content` required
 (≤ 20,000 chars, line breaks preserved); `title` ≤ 200; `author` ≤ 100 (defaults to
 אורי עמירם); `postedAt` optional `YYYY-MM-DD` or full ISO datetime; request body ≤ 64 KB;
-JSON only. The id is a server-generated UUID. The GitHub call never sends a `sha`, so an existing
-file can never be overwritten.
+`likes` optional non-negative integer; `sourceUrl` optional http(s) URL; JSON only. New ids are
+server-generated UUIDs and creation never overwrites an existing file. Edits and deletions are
+single commits made with the Git Data API (retried automatically if the branch moved meanwhile).
 
 ## Configuration
 

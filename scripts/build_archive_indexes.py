@@ -31,6 +31,7 @@ from archive_utils import (  # noqa: E402
     dedupe_key,
     dumps_json,
     now_iso,
+    validate_exclusions,
     read_json,
     validate_entry,
     write_json_atomic,
@@ -88,6 +89,22 @@ def load_archive(archive_dir: Path) -> tuple[dict[str, list[dict[str, Any]]], li
                 errors.append(f"{rel}: duplicate source item {key} (also in {seen_keys[key]})")
             seen_keys[key] = rel
             by_category[category].append(entry)
+
+    exclusions_path = archive_dir / "excluded.json"
+    if exclusions_path.exists():
+        try:
+            exclusions = read_json(exclusions_path)
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            errors.append(f"archive/excluded.json: invalid JSON ({exc})")
+        else:
+            errors.extend(f"archive/excluded.json: {p}" for p in validate_exclusions(exclusions))
+            if not errors:
+                for item in exclusions["entries"]:
+                    if item["id"] in seen_ids:
+                        errors.append(
+                            f"{seen_ids[item['id']]}: entry is listed in archive/excluded.json (deleted); "
+                            "remove it from excluded.json to restore it"
+                        )
     return by_category, errors
 
 
