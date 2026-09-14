@@ -52,7 +52,12 @@ Raw snapshots of each work's `<article>` element (no comments) are stored in
 
 ## Facebook — `facebook_scraper.py`
 
-Target: <https://www.facebook.com/groups/1435021850049747/user/659364624> (posts by this member in this group).
+Target: <https://www.facebook.com/groups/1435021850049747/user/659364624/> (posts by this member in this group).
+
+This is the **only** page posts are read from. If Facebook redirects anywhere else (group home,
+login, "content unavailable"), the run stops with `wrong-page` and nothing is scraped. Posts whose
+own link points to another group are ignored. Apart from this page, the scraper only opens the
+Facebook login page (when a login is needed) and downloads post photos from Facebook's image CDN.
 
 ### First-time login (manual, no credentials in any file)
 

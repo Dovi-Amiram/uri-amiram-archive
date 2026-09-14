@@ -173,7 +173,8 @@ ln -sf "$PWD/bin/update-palindromes" ~/.local/bin/update-palindromes   # run in 
 1. its Facebook post id is not archived yet,
 2. it was not deleted on the website (`archive/excluded.json`),
 3. it is dated after the newest archived Facebook post (`--full-history` drops this rule to fill gaps),
-4. it is a top-level post by Uri Amiram (id `659364624`) in the group.
+4. it is a top-level post by Uri Amiram (id `659364624`), read from
+   <https://www.facebook.com/groups/1435021850049747/user/659364624/> — the only page scraped.
 
 New posts are saved with their photos (downloaded into `archive/attachments/facebook/`) and like
 counts. Existing entries, including anything edited on the website, are never modified.

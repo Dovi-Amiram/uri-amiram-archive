@@ -53,3 +53,8 @@ def test_logged_out_session_is_reported_as_login_problem():
     result = uf.assess_report({"postsSeen": 0, "sessionEnded": True}, 0)
     assert any("logged the session out" in e for e in result.errors)
     assert not any("layout" in e for e in result.errors)
+
+
+def test_wrong_page_is_an_error():
+    result = uf.assess_report({"stopReason": "wrong-page", "landedOn": "https://www.facebook.com/groups/1435021850049747/"}, 1)
+    assert any("did not open the group member page" in e for e in result.errors)

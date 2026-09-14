@@ -123,6 +123,11 @@ def assess_report(report: dict[str, Any] | None, exit_code: int) -> Assessment:
         result.errors.append("The scraper did not write a run report.")
         return result
 
+    if report.get("stopReason") == "wrong-page":
+        result.errors.append(f"Facebook did not open the group member page (landed on {report.get('landedOn')}). Nothing was scraped.")
+        return result
+    if report.get("otherGroup", 0):
+        result.warnings.append(f"{report['otherGroup']} post(s) linked to another group were ignored.")
     if report.get("sessionEnded") and report.get("postsSeen", 0) == 0:
         result.errors.append("Facebook logged the session out. Run `update-palindromes --login` (or add credentials to .facebook.env) and try again.")
     elif report.get("postsSeen", 0) == 0:

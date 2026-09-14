@@ -165,3 +165,19 @@ def test_newest_archived_post_time(tmp_path):
     (folder / "facebook-2.json").write_text('{"postedAt": "2026-08-01T00:00:00Z"}', encoding="utf-8")
     (folder / "manual-x.json").write_text('{"postedAt": "2030-01-01"}', encoding="utf-8")  # manual entries don't count
     assert fb.newest_archived_post_time(tmp_path) == "2026-09-13T20:36:47Z"
+
+
+def test_only_the_group_member_page_is_scraped():
+    assert fb.TARGET_URL == "https://www.facebook.com/groups/1435021850049747/user/659364624/"
+    assert fb.is_on_target_page("https://www.facebook.com/groups/1435021850049747/user/659364624/")
+    assert fb.is_on_target_page("https://www.facebook.com/groups/1435021850049747/user/659364624")
+    assert fb.is_on_target_page("https://www.facebook.com/groups/1435021850049747/user/659364624/?locale=he_IL")
+    assert not fb.is_on_target_page("https://www.facebook.com/groups/1435021850049747/")
+    assert not fb.is_on_target_page("https://www.facebook.com/groups/1435021850049747/user/6593646240/")
+    assert not fb.is_on_target_page("https://www.facebook.com/login/?next=https://www.facebook.com/groups/1435021850049747/user/659364624/")
+
+
+def test_posts_linked_to_other_groups_are_rejected():
+    assert fb.is_from_target_group(fb.FbPost("1", permalink="https://www.facebook.com/groups/1435021850049747/posts/1/"))
+    assert fb.is_from_target_group(fb.FbPost("1", permalink=None))
+    assert not fb.is_from_target_group(fb.FbPost("1", permalink="https://www.facebook.com/groups/999/posts/1/"))

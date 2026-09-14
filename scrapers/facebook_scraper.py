@@ -72,7 +72,9 @@ from archive_utils import (  # noqa: E402
 
 GROUP_ID = "1435021850049747"
 USER_ID = "659364624"
-TARGET_URL = f"https://www.facebook.com/groups/{GROUP_ID}/user/{USER_ID}"
+# The ONLY page posts are read from: this member's posts inside this group.
+TARGET_URL = f"https://www.facebook.com/groups/{GROUP_ID}/user/{USER_ID}/"
+_TARGET_PATH = re.compile(rf"^https://(www|web|m)\.facebook\.com/groups/{GROUP_ID}/user/{USER_ID}/?(\?|#|$)")
 PROFILE_DIR = REPO_ROOT / ".facebook-profile"
 DEBUG_DIR = REPO_ROOT / "scrapers" / ".debug" / "facebook"
 
@@ -379,6 +381,17 @@ def dom_record_to_post(record: dict) -> FbPost | None:
         author_name=author_name,
         origin={"dom"},
     )
+
+
+def is_on_target_page(url: str) -> bool:
+    return bool(_TARGET_PATH.match(url))
+
+
+def is_from_target_group(post: FbPost) -> bool:
+    """A post whose own link names another group is not part of this archive."""
+    link = post.permalink or ""
+    match = re.search(r"/groups/([^/?#]+)/", link)
+    return match is None or match.group(1) == GROUP_ID
 
 
 def is_target_author(post: FbPost, expected_names: set[str]) -> bool:
@@ -733,6 +746,12 @@ def run(args: argparse.Namespace) -> int:
             page.goto(TARGET_URL, wait_until="domcontentloaded")
             page.wait_for_timeout(human_pause(5000))
 
+        if not is_on_target_page(page.url):
+            log.error("Facebook showed %s instead of %s; not scraping another page", page.url, TARGET_URL)
+            debug.dump(page, "not-on-target-page")
+            context.close()
+            return finish(EXIT_ERROR, stopReason="wrong-page", landedOn=page.url)
+
         for raw in page.evaluate(SCRIPT_JSON_JS):
             try:
                 absorb(collect_stories_from_json(json.loads(raw)))
@@ -814,7 +833,7 @@ def _record(post: FbPost) -> dict:
 
 def _save_posts(collected, expected_names, checkpoint, args, final: bool, saved_before=None, request_context=None, skip_ids=frozenset(), excluded_ids=frozenset(), report=None, newer_than: str | None = None) -> int:
     scraped_at = now_iso()
-    stats = {"created": 0, "updated": 0, "refreshed": 0, "unchanged": 0, "alreadyArchived": 0, "excluded": 0, "notNewer": 0, "undated": 0, "otherAuthor": 0, "noText": 0, "withPhotos": 0, "photoFailures": 0}
+    stats = {"created": 0, "updated": 0, "refreshed": 0, "unchanged": 0, "alreadyArchived": 0, "excluded": 0, "notNewer": 0, "undated": 0, "otherAuthor": 0, "otherGroup": 0, "noText": 0, "withPhotos": 0, "photoFailures": 0}
     examples = []
     others = []
     ordered = sorted(collected.values(), key=lambda p: p.created_at or "", reverse=True)
@@ -823,6 +842,10 @@ def _save_posts(collected, expected_names, checkpoint, args, final: bool, saved_
             p for p in ordered if not is_target_author(p, expected_names)
         ]
     for post in ordered:
+        if not is_from_target_group(post):
+            stats["otherGroup"] += 1
+            log.warning("skipping post %s: its link points to another group (%s)", post.post_id, post.permalink)
+            continue
         if not is_target_author(post, expected_names):
             stats["otherAuthor"] += 1
             others.append((post.post_id, post.author_id, post.author_name))
@@ -859,7 +882,7 @@ def _save_posts(collected, expected_names, checkpoint, args, final: bool, saved_
     if report is not None:
         report["photoFailures"] = report.get("photoFailures", 0) + stats["photoFailures"]
         if final:
-            report.update(otherAuthor=stats["otherAuthor"], noText=stats["noText"], notNewer=stats["notNewer"], undated=stats["undated"])
+            report.update(otherAuthor=stats["otherAuthor"], otherGroup=stats["otherGroup"], noText=stats["noText"], notNewer=stats["notNewer"], undated=stats["undated"])
     if not final:
         return 0
 
