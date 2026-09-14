@@ -72,6 +72,19 @@ python scrapers/facebook_scraper.py                           # full historical 
 python scrapers/facebook_scraper.py --headed --debug          # watch it; save diagnostics
 ```
 
+Monthly use goes through `update-palindromes` (see the main README), which runs this scraper
+with `--new-only`: only posts with an unarchived id, not deleted on the website, and dated after the
+newest archived post are saved (`--stop-after-known 0` scans all history without the date rule).
+Each run writes `scrapers/.state/facebook-last-run.json` (posts seen, new ids, stop reason, photo
+failures, login method) which the updater checks.
+
+Exit codes: `0` ok, `1` error, `2` not logged in (automatic login impossible), `3` Facebook requires
+manual verification.
+
+Automatic login: if the session has expired and `.facebook.env` (or `FACEBOOK_EMAIL` /
+`FACEBOOK_PASSWORD` environment variables) exists, `automatic_login()` fills the login form. Any
+checkpoint / two-factor / CAPTCHA page ends the run with exit code 3.
+
 Options: `--max-stale-scrolls N` (stop after N scrolls without new posts, default 12),
 `--scroll-pause-ms`, `--save-raw` (store merged raw records in `archive/raw/facebook/`),
 `--author-name NAME` (accept an extra display name if no numeric id is available), `--force`.

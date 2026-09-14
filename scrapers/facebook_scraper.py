@@ -406,13 +406,14 @@ def to_entry(post: FbPost, scraped_at: str, attachments: list[dict] | None = Non
 _EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}
 
 
-def download_photos(post: FbPost, request_context) -> list[dict]:
+def download_photos(post: FbPost, request_context) -> tuple[list[dict], int]:
     """Download the post's photos into archive/attachments/facebook/ (Facebook CDN links expire).
 
-    Already-downloaded files are reused. Returns canonical attachment objects.
+    Already-downloaded files are reused. Returns (canonical attachment objects, failed downloads).
     """
     folder = ATTACHMENTS_DIR / "facebook"
     attachments = []
+    failures = 0
     for index, photo in enumerate(post.photos, start=1):
         stem = f"{post.post_id}-{slugify_id_part(photo.photo_id)}"
         existing = sorted(folder.glob(f"{stem}.*")) if folder.is_dir() else []
@@ -423,10 +424,12 @@ def download_photos(post: FbPost, request_context) -> list[dict]:
                 response = request_context.get(photo.uri, timeout=60_000)
             except Exception as exc:
                 log.warning("post %s photo %s: download failed (%s)", post.post_id, photo.photo_id, exc)
+                failures += 1
                 continue
             content_type = (response.headers.get("content-type") or "").split(";")[0].strip()
             if not response.ok or content_type not in _EXTENSIONS:
                 log.warning("post %s photo %s: HTTP %s %s", post.post_id, photo.photo_id, response.status, content_type)
+                failures += 1
                 continue
             folder.mkdir(parents=True, exist_ok=True)
             path = folder / f"{stem}{_EXTENSIONS[content_type]}"
@@ -445,7 +448,7 @@ def download_photos(post: FbPost, request_context) -> list[dict]:
                 "order": index,
             }
         )
-    return attachments
+    return attachments, failures
 
 
 # =========================================================================== browser flow
@@ -493,6 +496,113 @@ def human_pause(base_ms: int) -> int:
     return int(base_ms * random.uniform(0.7, 1.5))
 
 
+CREDENTIALS_FILE = REPO_ROOT / ".facebook.env"
+
+# Exit codes (also used by scripts/update_facebook.py)
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_LOGIN_REQUIRED = 2
+EXIT_VERIFICATION_REQUIRED = 3
+
+
+def parse_env_file(text: str) -> dict[str, str]:
+    """Minimal KEY=VALUE parser (comments, blank lines, optional quotes, optional 'export')."""
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.removeprefix("export ").partition("=")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        values[key.strip()] = value
+    return values
+
+
+def load_credentials(path: Path = CREDENTIALS_FILE, environ: dict[str, str] | None = None) -> tuple[str, str] | None:
+    """Facebook email/password from the environment or the git-ignored .facebook.env file.
+
+    Used only to log in automatically when the saved browser session has expired. The values
+    are never logged or written anywhere else.
+    """
+    import os
+
+    env = dict(os.environ if environ is None else environ)
+    if path.exists():
+        mode = path.stat().st_mode & 0o077
+        if mode:
+            log.warning("%s is readable by other users; run: chmod 600 %s", path.name, path)
+        env = {**parse_env_file(path.read_text(encoding="utf-8")), **{k: v for k, v in env.items() if k.startswith("FACEBOOK_")}}
+    email, password = env.get("FACEBOOK_EMAIL", "").strip(), env.get("FACEBOOK_PASSWORD", "")
+    return (email, password) if email and password else None
+
+
+_VERIFICATION_URL = re.compile(r"/checkpoint/|two_step_verification|two-factor|/login/device-based|/recover/|captcha", re.IGNORECASE)
+
+
+def automatic_login(context, page, email: str, password: str, timeout_s: int = 60) -> str:
+    """Log in with credentials. Returns "ok", "verification" (Facebook wants a human: 2FA,
+    security check, CAPTCHA) or "failed". Never tries to bypass verification."""
+    log.info("session expired; logging in automatically")
+    page.goto("https://www.facebook.com/login/", wait_until="domcontentloaded")
+    page.wait_for_timeout(human_pause(2000))
+    # Cookie consent dialog (EU/IL variants); harmless if absent.
+    for label in ("Decline optional cookies", "Allow all cookies", "דחיית קובצי Cookie אופציונליים", "אפשר את כל קובצי ה-Cookie"):
+        button = page.get_by_role("button", name=label)
+        if button.count():
+            button.first.click()
+            page.wait_for_timeout(1000)
+            break
+    email_box = page.locator('input[name="email"]')
+    if not email_box.count():
+        return "verification" if _VERIFICATION_URL.search(page.url) else "failed"
+    email_box.fill(email)
+    page.wait_for_timeout(human_pause(600))
+    page.locator('input[name="pass"]').fill(password)
+    page.wait_for_timeout(human_pause(600))
+    page.locator('input[name="pass"]').press("Enter")
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        page.wait_for_timeout(1500)
+        if _VERIFICATION_URL.search(page.url):
+            return "verification"
+        if is_logged_in(context):
+            page.wait_for_timeout(3000)
+            return "verification" if _VERIFICATION_URL.search(page.url) else "ok"
+    return "failed"
+
+
+def newest_archived_post_time(archive_dir=ARCHIVE_DIR) -> str | None:
+    """postedAt of the newest archived Facebook post (ISO string), or None."""
+    folder = archive_dir / "palindromes"
+    times = []
+    for path in folder.glob("facebook-*.json") if folder.is_dir() else []:
+        try:
+            posted = json.loads(path.read_text(encoding="utf-8")).get("postedAt")
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(posted, str) and posted:
+            times.append(posted)
+    return max(times) if times else None
+
+
+def is_new_post(post: FbPost, saved: set[str], excluded: set[str], newer_than: str | None) -> tuple[bool, str]:
+    """New-only rule: an id that is not archived or deleted AND (when newer_than is set) a post
+    time later than the newest archived post. Returns (is_new, reason-if-not)."""
+    if post.post_id in excluded:
+        return False, "excluded"
+    if post.post_id in saved:
+        return False, "alreadyArchived"
+    if newer_than:
+        if not post.created_at:
+            return False, "undated"
+        if post.created_at <= newer_than:
+            return False, "notNewer"
+    return True, ""
+
+
 def saved_post_ids(archive_dir=ARCHIVE_DIR) -> set[str]:
     """Facebook post ids that already have an archive entry."""
     folder = archive_dir / "palindromes"
@@ -524,8 +634,13 @@ def run(args: argparse.Namespace) -> int:
     excluded_ids = {i.removeprefix("facebook-") for i in load_exclusions() if i.startswith("facebook-")}
     # In --new-only mode archived posts are neither re-saved nor refreshed.
     skip_ids = saved_post_ids() if args.new_only else set()
+    # ...and only posts newer than the newest archived one count (unless scanning full history).
+    newer_than = newest_archived_post_time() if args.new_only and args.stop_after_known else None
     if args.new_only:
-        log.info("new-only mode: %d posts already archived, %d excluded", len(skip_ids), len(excluded_ids))
+        log.info(
+            "new-only mode: %d posts already archived, %d excluded, newest archived post %s",
+            len(skip_ids), len(excluded_ids), newer_than or "(any date)",
+        )
 
     def absorb(posts: list[FbPost]) -> None:
         for post in posts:
@@ -533,6 +648,21 @@ def run(args: argparse.Namespace) -> int:
                 collected[post.post_id].merge(post)
             else:
                 collected[post.post_id] = post
+
+    report: dict[str, Any] = {
+        "startedAt": now_iso(),
+        "mode": "new-only" if args.new_only else "full",
+        "dryRun": bool(args.dry_run),
+        "login": "session",
+        "postsSeen": 0,
+        "stopReason": None,
+        "newerThan": None,
+    }
+
+    def finish(code: int, **extra: Any) -> int:
+        report.update(extra, exitCode=code, finishedAt=now_iso())
+        write_json_atomic(STATE_DIR / "facebook-last-run.json", report)
+        return code
 
     PROFILE_DIR.mkdir(exist_ok=True)
     with sync_playwright() as pw:
@@ -544,19 +674,37 @@ def run(args: argparse.Namespace) -> int:
         )
         page = context.pages[0] if context.pages else context.new_page()
 
-        if args.login or not is_logged_in(context):
+        def ensure_login() -> int | None:
+            """Returns an exit code when login is impossible, None when logged in."""
+            if is_logged_in(context) and not args.login:
+                return None
+            credentials = None if args.login else load_credentials()
+            if credentials:
+                outcome = automatic_login(context, page, *credentials)
+                report["login"] = f"automatic:{outcome}"
+                if outcome == "ok":
+                    log.info("automatic login succeeded")
+                    return None
+                debug.dump(page, f"automatic-login-{outcome}")
+                if outcome == "verification":
+                    log.error("Facebook asks for verification (security check / 2FA). Log in by hand once: update-palindromes --login")
+                    return EXIT_VERIFICATION_REQUIRED
+                log.error("automatic login failed (wrong credentials in .facebook.env, or the login page changed)")
+                return EXIT_LOGIN_REQUIRED
             if not args.headed:
-                log.error("not logged in. Run once with --login (opens a visible browser).")
-                context.close()
-                return 2
+                log.error("not logged in. Log in by hand once (update-palindromes --login), or add credentials to .facebook.env")
+                return EXIT_LOGIN_REQUIRED
+            report["login"] = "manual"
             if not wait_for_manual_login(context, page, args.login_timeout):
                 log.error("login not detected before timeout")
-                context.close()
-                return 2
+                return EXIT_LOGIN_REQUIRED
             log.info("login detected; session saved in %s", PROFILE_DIR)
-            if args.login:
-                context.close()
-                return 0
+            return None
+
+        problem = ensure_login()
+        if problem is not None or args.login:
+            context.close()
+            return finish(problem if problem is not None else EXIT_OK, stopReason="login")
 
         def on_response(response) -> None:
             if "/api/graphql" not in response.url:
@@ -572,11 +720,18 @@ def run(args: argparse.Namespace) -> int:
         log.info("opening %s", TARGET_URL)
         page.goto(TARGET_URL, wait_until="domcontentloaded")
         page.wait_for_timeout(human_pause(5000))
-        if "login" in page.url:
-            log.error("Facebook redirected to login; session expired. Run with --login.")
+        if "login" in page.url or _VERIFICATION_URL.search(page.url) or not is_logged_in(context):
+            # The session cookie existed but Facebook no longer accepts it.
             debug.dump(page, "redirected-to-login")
-            context.close()
-            return 2
+            log.warning("Facebook ended the saved session (logged out)")
+            report["sessionEnded"] = True
+            context.clear_cookies()
+            problem = ensure_login()
+            if problem is not None:
+                context.close()
+                return finish(problem, stopReason="login")
+            page.goto(TARGET_URL, wait_until="domcontentloaded")
+            page.wait_for_timeout(human_pause(5000))
 
         for raw in page.evaluate(SCRIPT_JSON_JS):
             try:
@@ -585,6 +740,8 @@ def run(args: argparse.Namespace) -> int:
                 continue
 
         stale_rounds = 0
+        stop_reason = "end-of-feed"
+        dom_warnings = 0
         rounds = 0
         last_count = -1
         last_new_count = 0
@@ -598,6 +755,7 @@ def run(args: argparse.Namespace) -> int:
             dom_posts = [p for p in (dom_record_to_post(r) for r in records) if p]
             absorb(dom_posts)
             if records and not dom_posts:
+                dom_warnings += 1
                 log.warning("found %d articles but no post ids - selectors may be outdated", len(records))
                 debug.dump(page, "articles-without-ids", records[:5])
 
@@ -610,37 +768,53 @@ def run(args: argparse.Namespace) -> int:
             else:
                 stale_rounds += 1
             if args.max_posts and len(mine) >= args.max_posts:
+                stop_reason = "max-posts"
                 break
             if args.new_only:
-                new_count = sum(1 for p in mine if p.post_id not in skip_ids and p.post_id not in excluded_ids)
+                new_count = sum(1 for p in mine if is_new_post(p, skip_ids, excluded_ids, newer_than)[0])
                 rounds_without_new = 0 if new_count > last_new_count else rounds_without_new + 1
                 last_new_count = new_count
                 if should_stop_new_only([p.post_id for p in mine], skip_ids | excluded_ids, rounds_without_new, args.stop_after_known):
                     log.info("reached already-archived posts (%d new found); stopping", new_count)
+                    stop_reason = "reached-archived"
                     break
             if rounds % 10 == 0 and not args.dry_run:
-                _save_posts(collected, expected_names, checkpoint, args, final=False, request_context=context.request, skip_ids=skip_ids, excluded_ids=excluded_ids)
+                _save_posts(collected, expected_names, checkpoint, args, final=False, request_context=context.request, skip_ids=skip_ids, excluded_ids=excluded_ids, report=report, newer_than=newer_than)
             page.mouse.wheel(0, random.randint(600, 1100))
             page.wait_for_timeout(human_pause(args.scroll_pause_ms))
 
         if args.debug:
             write_json_atomic(DEBUG_DIR / "last-run-posts.json", [_record(p) for p in collected.values()])
         # Save while the browser is still open: photo downloads use its session.
+        mine_ids = {p.post_id for p in collected.values() if is_target_author(p, expected_names)}
+        # A logged-out page shows no posts; make that distinguishable from a layout change.
+        if not is_logged_in(context):
+            report["sessionEnded"] = True
+        report.update(
+            newerThan=newer_than,
+            postsSeen=len(collected),
+            targetPosts=len(mine_ids),
+            alreadyArchivedSeen=len(mine_ids & skip_ids),
+            excludedSeen=len(mine_ids & excluded_ids),
+            scrolls=rounds,
+            stopReason=stop_reason,
+            domWarnings=dom_warnings,
+        )
         result = _save_posts(
             collected, expected_names, checkpoint, args, final=True, saved_before=saved_before,
-            request_context=context.request, skip_ids=skip_ids, excluded_ids=excluded_ids,
+            request_context=context.request, skip_ids=skip_ids, excluded_ids=excluded_ids, report=report, newer_than=newer_than,
         )
         context.close()
-    return result
+    return finish(result)
 
 
 def _record(post: FbPost) -> dict:
     return vars(post) | {"origin": sorted(post.origin), "photos": [vars(ph) for ph in post.photos]}
 
 
-def _save_posts(collected, expected_names, checkpoint, args, final: bool, saved_before=None, request_context=None, skip_ids=frozenset(), excluded_ids=frozenset()) -> int:
+def _save_posts(collected, expected_names, checkpoint, args, final: bool, saved_before=None, request_context=None, skip_ids=frozenset(), excluded_ids=frozenset(), report=None, newer_than: str | None = None) -> int:
     scraped_at = now_iso()
-    stats = {"created": 0, "updated": 0, "refreshed": 0, "unchanged": 0, "alreadyArchived": 0, "excluded": 0, "otherAuthor": 0, "noText": 0, "withPhotos": 0}
+    stats = {"created": 0, "updated": 0, "refreshed": 0, "unchanged": 0, "alreadyArchived": 0, "excluded": 0, "notNewer": 0, "undated": 0, "otherAuthor": 0, "noText": 0, "withPhotos": 0, "photoFailures": 0}
     examples = []
     others = []
     ordered = sorted(collected.values(), key=lambda p: p.created_at or "", reverse=True)
@@ -653,11 +827,13 @@ def _save_posts(collected, expected_names, checkpoint, args, final: bool, saved_
             stats["otherAuthor"] += 1
             others.append((post.post_id, post.author_id, post.author_name))
             continue
-        if post.post_id in excluded_ids:
+        if args.new_only:
+            new, reason = is_new_post(post, skip_ids, excluded_ids, newer_than)
+            if not new:
+                stats[reason] += 1  # archived, deleted on the website, or not newer than the archive
+                continue
+        elif post.post_id in excluded_ids:
             stats["excluded"] += 1  # deleted on the website
-            continue
-        if post.post_id in skip_ids:
-            stats["alreadyArchived"] += 1
             continue
         has_text = bool(post.text and normalize_content(post.text))
         if not has_text and not post.photos:
@@ -669,7 +845,8 @@ def _save_posts(collected, expected_names, checkpoint, args, final: bool, saved_
             entry = to_entry(post, scraped_at)
             examples.append({"entry": entry, "photos": [vars(ph) for ph in post.photos], "extractedFrom": sorted(post.origin)})
             continue
-        attachments = download_photos(post, request_context) if (post.photos and request_context) else []
+        attachments, failed = download_photos(post, request_context) if (post.photos and request_context) else ([], 0)
+        stats["photoFailures"] += failed
         if post.photos and not attachments and not has_text:
             continue  # image-only post whose image could not be downloaded; retry next run
         entry = to_entry(post, scraped_at, attachments)
@@ -679,6 +856,10 @@ def _save_posts(collected, expected_names, checkpoint, args, final: bool, saved_
         checkpoint.mark_done(post.post_id)
     if not args.dry_run:
         checkpoint.save()
+    if report is not None:
+        report["photoFailures"] = report.get("photoFailures", 0) + stats["photoFailures"]
+        if final:
+            report.update(otherAuthor=stats["otherAuthor"], noText=stats["noText"], notNewer=stats["notNewer"], undated=stats["undated"])
     if not final:
         return 0
 
@@ -694,7 +875,10 @@ def _save_posts(collected, expected_names, checkpoint, args, final: bool, saved_
         # Periodic saves may already have created some files, so compare against the archive.
         new_ids = sorted(saved_post_ids() - skip_ids)
         print(f"new posts archived    : {len(new_ids)} {new_ids}")
-        write_json_atomic(STATE_DIR / "facebook-last-new.json", {"finishedAt": now_iso(), "newPostIds": new_ids})
+        if report is not None:
+            report["newPostIds"] = new_ids
+    if args.new_only and args.dry_run and report is not None:
+        report["newPostIds"] = sorted(e["entry"]["sourceId"] for e in examples)
     if args.dry_run:
         print("\n==== parsed posts (dry run, not saved) ====")
         for example in examples:

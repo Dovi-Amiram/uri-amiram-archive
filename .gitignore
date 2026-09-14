@@ -16,3 +16,6 @@ worker/.wrangler/
 # generated at build time by scripts/build_archive_indexes.py
 public/data/*.json
 public/attachments/
+
+# Facebook credentials for automatic login (never commit)
+.facebook.env

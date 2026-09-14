@@ -149,23 +149,69 @@ author id is `659364624`, and never stores comments or interacts with Facebook. 
 best-effort browser automation: Facebook changes its pages. See
 [scrapers/README.md → When Facebook changes](scrapers/README.md#when-facebook-changes).
 
-### Monthly update (new posts only)
+### Monthly update: `update-palindromes`
+
+One command archives new palindrome posts and publishes them:
 
 ```bash
-.venv/bin/python scripts/update_facebook.py            # save new posts, commit and push
-.venv/bin/python scripts/update_facebook.py --dry-run  # just list the new posts it would save
+update-palindromes                 # pull, scrape new posts, validate, commit, push
+update-palindromes --dry-run       # only list the posts it would add
+update-palindromes --login         # log in to Facebook by hand (visible browser), then exit
+update-palindromes --no-push       # commit locally only
+update-palindromes --full-history  # scan the whole history for missed posts (slow)
 ```
 
-The script pulls the latest repository, scrolls the group page from the newest post and saves
-only posts whose id is not archived yet (with their photos). It stops once it reaches posts that are
-already saved, validates the archive, then commits (`Add N new palindrome posts from Facebook`,
-listing each post) and pushes, and the site redeploys automatically. Existing entries are not
-modified. Options: `--no-push`, `--no-pull`, `--headed`, `--full-history` (scan the entire
-history for anything missed, slower). If Facebook's session expired, run the `--login` step
-below first.
+**Install the command once** (it is a small wrapper around `scripts/update_facebook.py` that uses
+the project's `.venv`):
 
-To also refresh like counts on all existing posts, run the full scraper
-(`scrapers/facebook_scraper.py`) and commit the changes.
+```bash
+ln -sf "$PWD/bin/update-palindromes" ~/.local/bin/update-palindromes   # run in the repository root
+```
+
+**What counts as a new post.** A post is saved only if all of these hold:
+
+1. its Facebook post id is not archived yet,
+2. it was not deleted on the website (`archive/excluded.json`),
+3. it is dated after the newest archived Facebook post (`--full-history` drops this rule to fill gaps),
+4. it is a top-level post by Uri Amiram (id `659364624`) in the group.
+
+New posts are saved with their photos (downloaded into `archive/attachments/facebook/`) and like
+counts. Existing entries, including anything edited on the website, are never modified.
+
+**Steps and output.** The terminal shows each step: repository check and `git pull`, the scrape
+(one progress line per scroll), result checks and archive validation, the commit (listing each new
+post) and the push. It ends with a summary. Problems are printed in a red block, with a terminal
+bell and a desktop notification (`notify-send`):
+
+| Alert | Meaning / what to do |
+| --- | --- |
+| Facebook logged the session out / not logged in | Run `update-palindromes --login`, or add credentials (below) |
+| Facebook asks for a security check or 2FA code | Run `update-palindromes --login` and complete it by hand |
+| Facebook showed no posts at all | The page layout probably changed; run `update-palindromes --dry-run --headed` and see the scrapers README |
+| Posts found, but none by Uri Amiram | Author detection broke; do not commit, investigate |
+| Scrolling ended before reaching archived posts | Possibly missed posts; run `--full-history` |
+| Photo(s) could not be downloaded | Retried automatically next run |
+| Archive validation failed | Nothing was committed; the message names the file |
+
+Warnings (yellow) do not stop the update; errors (red) mean nothing was committed. The exit code is
+non-zero on errors, so the command can also be scheduled.
+
+**Automatic Facebook login (optional).** Normally the saved browser session (`.facebook-profile/`)
+is reused. If Facebook ends it, the command can log in by itself:
+
+```bash
+cp .facebook.env.example .facebook.env
+chmod 600 .facebook.env
+# edit .facebook.env: FACEBOOK_EMAIL=... and FACEBOOK_PASSWORD=...
+```
+
+`.facebook.env` is git-ignored and read only by the scraper, and the values are never logged. The
+script warns if the file is readable by other users. It never tries to get past Facebook security
+checks, two-factor codes or CAPTCHAs; it stops and asks for `update-palindromes --login` instead.
+
+To refresh like counts on all existing posts, run the full scraper
+(`.venv/bin/python scrapers/facebook_scraper.py`) and commit the result; fields edited on the website
+are still left alone.
 
 ## 7. First-time Facebook login
 

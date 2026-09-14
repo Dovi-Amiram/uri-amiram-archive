@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Terminal command for the monthly palindrome update. Install once with:
+#   ln -sf "$(pwd)/bin/update-palindromes" ~/.local/bin/update-palindromes
+set -euo pipefail
+repo="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+if [[ ! -x "$repo/.venv/bin/python" ]]; then
+  echo "Python environment missing. Run: cd \"$repo\" && python3 -m venv .venv && .venv/bin/pip install -r scrapers/requirements.txt" >&2
+  exit 1
+fi
+exec "$repo/.venv/bin/python" "$repo/scripts/update_facebook.py" "$@"

@@ -120,3 +120,48 @@ def test_saved_post_ids(tmp_path):
     for name in ("facebook-1.json", "facebook-22.json", "manual-abc.json"):
         (tmp_path / "palindromes" / name).write_text("{}")
     assert fb.saved_post_ids(tmp_path) == {"1", "22"}
+
+
+def test_parse_env_file_and_credentials(tmp_path):
+    parsed = fb.parse_env_file('# comment\n\nFACEBOOK_EMAIL="me@example.com"\nexport FACEBOOK_PASSWORD=p=ss #1\nOTHER=x\n')
+    assert parsed["FACEBOOK_EMAIL"] == "me@example.com"
+    assert parsed["FACEBOOK_PASSWORD"] == "p=ss #1"
+
+    path = tmp_path / ".facebook.env"
+    assert fb.load_credentials(path, environ={}) is None
+    path.write_text("FACEBOOK_EMAIL=file@example.com\nFACEBOOK_PASSWORD=from-file\n", encoding="utf-8")
+    path.chmod(0o600)
+    assert fb.load_credentials(path, environ={}) == ("file@example.com", "from-file")
+    # Real environment variables win over the file.
+    assert fb.load_credentials(path, environ={"FACEBOOK_PASSWORD": "from-env"}) == ("file@example.com", "from-env")
+    path.write_text("FACEBOOK_EMAIL=\nFACEBOOK_PASSWORD=x\n", encoding="utf-8")
+    assert fb.load_credentials(path, environ={}) is None
+
+
+def test_verification_urls_are_recognized():
+    assert fb._VERIFICATION_URL.search("https://www.facebook.com/checkpoint/1501092823525282/")
+    assert fb._VERIFICATION_URL.search("https://www.facebook.com/two_step_verification/two_factor/")
+    assert not fb._VERIFICATION_URL.search("https://www.facebook.com/groups/1435021850049747/user/659364624")
+
+
+def test_is_new_post_requires_new_id_and_newer_date():
+    saved, excluded = {"1"}, {"2"}
+    newest = "2026-09-13T20:36:47Z"
+    post = lambda pid, t: fb.FbPost(pid, text="x", created_at=t)
+    assert fb.is_new_post(post("1", "2026-09-20T00:00:00Z"), saved, excluded, newest) == (False, "alreadyArchived")
+    assert fb.is_new_post(post("2", "2026-09-20T00:00:00Z"), saved, excluded, newest) == (False, "excluded")
+    assert fb.is_new_post(post("3", "2026-09-01T00:00:00Z"), saved, excluded, newest) == (False, "notNewer")
+    assert fb.is_new_post(post("3", newest), saved, excluded, newest) == (False, "notNewer")
+    assert fb.is_new_post(post("3", None), saved, excluded, newest) == (False, "undated")
+    assert fb.is_new_post(post("3", "2026-09-14T08:00:00Z"), saved, excluded, newest) == (True, "")
+    # --full-history: no date rule
+    assert fb.is_new_post(post("3", "2016-01-01T00:00:00Z"), saved, excluded, None) == (True, "")
+
+
+def test_newest_archived_post_time(tmp_path):
+    folder = tmp_path / "palindromes"
+    folder.mkdir()
+    (folder / "facebook-1.json").write_text('{"postedAt": "2026-09-13T20:36:47Z"}', encoding="utf-8")
+    (folder / "facebook-2.json").write_text('{"postedAt": "2026-08-01T00:00:00Z"}', encoding="utf-8")
+    (folder / "manual-x.json").write_text('{"postedAt": "2030-01-01"}', encoding="utf-8")  # manual entries don't count
+    assert fb.newest_archived_post_time(tmp_path) == "2026-09-13T20:36:47Z"
