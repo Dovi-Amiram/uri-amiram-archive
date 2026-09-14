@@ -143,7 +143,7 @@ export function EntryForm({ section, entry, session, onSession, onClose, onSaved
               rows={10}
               required={!hasImages}
               aria-required={!hasImages}
-              autoFocus
+              data-autofocus
             />
           ),
           hasImages ? 'לפריט זה מצורפות תמונות, ולכן אפשר להשאיר את התוכן ריק.' : undefined,

@@ -69,6 +69,8 @@ export default function App() {
             entries={shown[section.category]}
             pendingIds={pendingIds}
             onOpen={handleOpen}
+            onEdit={(entry) => setEditor({ mode: 'edit', entry })}
+            onDelete={(entry) => setEditor({ mode: 'delete', entry })}
             onAdd={() => setEditor({ mode: 'create' })}
           />
         )}
@@ -109,7 +111,7 @@ export default function App() {
           onClose={closeEditor}
           onDeleted={(entry) => {
             setEditor(null)
-            closeReader()
+            if (entryId === entry.id) closeReader()
             watch('delete', entry)
           }}
         />

@@ -810,3 +810,59 @@ a.entry-meta__source:hover {
 .dialog--confirm .form-actions {
   margin-top: 1rem;
 }
+
+/* ---------------------------------------------------------------- card actions */
+
+.card__top {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.card__heading {
+  flex: 1;
+  min-width: 0;
+}
+
+.card__actions {
+  display: flex;
+  flex: none;
+  gap: 0.15rem;
+  margin-block-start: -0.35rem;
+  margin-inline-end: -0.5rem;
+}
+
+.icon-button--action {
+  width: 2.25rem;
+  height: 2.25rem;
+  color: var(--ink-soft);
+  opacity: 0.75;
+}
+
+.icon-button--action:hover,
+.icon-button--action:focus-visible {
+  opacity: 1;
+  color: var(--accent);
+}
+
+.icon-button--danger:hover,
+.icon-button--danger:focus-visible {
+  color: #a1260f;
+  background: #f6e3de;
+}
+
+@media (hover: hover) {
+  .card .icon-button--action {
+    opacity: 0.45;
+  }
+
+  .card:hover .icon-button--action,
+  .card:focus-within .icon-button--action {
+    opacity: 0.85;
+  }
+
+  .card .icon-button--action:hover,
+  .card .icon-button--action:focus-visible {
+    opacity: 1;
+  }
+}

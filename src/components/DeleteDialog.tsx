@@ -48,7 +48,7 @@ export function DeleteDialog({ section, entry, session, onSession, onClose, onDe
   }
 
   return (
-    <Dialog title="מחיקה" onClose={onClose} className="dialog--confirm">
+    <Dialog title="אישור מחיקה" onClose={onClose} className="dialog--confirm">
       <p className="confirm__question">{section.deleteQuestion}</p>
       <blockquote className="confirm__preview work-text">
         {entry.title && <strong>{entry.title}</strong>}
@@ -77,10 +77,10 @@ export function DeleteDialog({ section, entry, session, onSession, onClose, onDe
       )}
       <div className="form-actions">
         <button type="button" className="button button--danger" onClick={() => void confirm()} disabled={deleting}>
-          {deleting ? 'מוחק…' : 'מחיקה'}
+          {deleting ? 'מוחק…' : 'כן, למחוק'}
         </button>
-        <button type="button" className="button" onClick={onClose} disabled={deleting} autoFocus>
-          ביטול
+        <button type="button" className="button" onClick={onClose} disabled={deleting} data-autofocus>
+          לא, ביטול
         </button>
       </div>
     </Dialog>

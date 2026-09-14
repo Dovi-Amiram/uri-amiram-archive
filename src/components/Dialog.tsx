@@ -24,6 +24,9 @@ export function Dialog({ title, onClose, children, className, hideTitle }: Dialo
     if (!dialog) return
     const opener = document.activeElement as HTMLElement | null
     dialog.showModal()
+    // showModal() focuses the first focusable element (the close button); prefer the element the
+    // content marked with data-autofocus (e.g. "Cancel" in a delete confirmation).
+    dialog.querySelector<HTMLElement>('[data-autofocus]')?.focus()
     document.body.classList.add('modal-open')
     const handleCancel = (event: Event) => {
       event.preventDefault()

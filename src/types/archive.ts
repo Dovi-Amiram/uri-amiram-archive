@@ -56,7 +56,7 @@ export const SECTIONS: readonly SectionInfo[] = [
     label: 'יצירות',
     addLabel: 'הוספת יצירה',
     editLabel: 'עריכת יצירה',
-    deleteQuestion: 'למחוק את היצירה? היא תוסר מהאתר.',
+    deleteQuestion: 'האם אתם בטוחים שברצונכם למחוק את היצירה? היא תוסר מהאתר.',
     messages: {
       create: {
         publishing: 'היצירה נשמרה. האתר מתעדכן כעת.',
@@ -82,7 +82,7 @@ export const SECTIONS: readonly SectionInfo[] = [
     label: 'פלינדרומים',
     addLabel: 'הוספת פלינדרום',
     editLabel: 'עריכת פלינדרום',
-    deleteQuestion: 'למחוק את הפלינדרום? הוא יוסר מהאתר.',
+    deleteQuestion: 'האם אתם בטוחים שברצונכם למחוק את הפלינדרום? הוא יוסר מהאתר.',
     messages: {
       create: {
         publishing: 'הפלינדרום נשמר. האתר מתעדכן כעת.',

@@ -9,6 +9,8 @@ interface ArchivePageProps {
   entries: ArchiveEntry[]
   pendingIds: Set<string>
   onOpen: (entry: ArchiveEntry) => void
+  onEdit: (entry: ArchiveEntry) => void
+  onDelete: (entry: ArchiveEntry) => void
   onAdd: () => void
 }
 
@@ -33,7 +35,7 @@ const DIRECTION_LABELS: Record<SortField, Record<SortDirection, string>> = {
 
 const DEFAULT_DIRECTION: Record<SortField, SortDirection> = { date: 'desc', title: 'asc', likes: 'desc' }
 
-export function ArchivePage({ section, entries, pendingIds, onOpen, onAdd }: ArchivePageProps) {
+export function ArchivePage({ section, entries, pendingIds, onOpen, onEdit, onDelete, onAdd }: ArchivePageProps) {
   const [query, setQuery] = useState('')
   const [field, setField] = useState<SortField>('date')
   const [direction, setDirection] = useState<SortDirection>('desc')
@@ -113,7 +115,14 @@ export function ArchivePage({ section, entries, pendingIds, onOpen, onAdd }: Arc
         <ul className={`entry-list${isPalindromes ? ' entry-list--grid' : ''}`}>
           {visible.map((entry) => (
             <li key={entry.id}>
-              <EntryCard entry={entry} pending={pendingIds.has(entry.id)} onOpen={onOpen} compact={isPalindromes} />
+              <EntryCard
+                entry={entry}
+                pending={pendingIds.has(entry.id)}
+                onOpen={onOpen}
+                onEdit={onEdit}
+                onDelete={onDelete}
+                compact={isPalindromes}
+              />
             </li>
           ))}
         </ul>
