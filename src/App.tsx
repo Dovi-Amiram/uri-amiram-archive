@@ -1,12 +1,13 @@
 import { useCallback, useState } from 'react'
 import { EntryForm } from './components/EntryForm'
 import { EntryReader } from './components/EntryReader'
+import { SiteHeader } from './components/SiteHeader'
 import { StatusBanner } from './components/StatusBanner'
 import { useArchiveData } from './hooks/useArchiveData'
-import { buildHash, useHashRoute } from './hooks/useHashRoute'
+import { useHashRoute } from './hooks/useHashRoute'
 import { usePublishWatcher } from './hooks/usePublishWatcher'
 import { ArchivePage } from './pages/ArchivePage'
-import { SECTIONS, type ArchiveEntry } from './types/archive'
+import type { ArchiveEntry } from './types/archive'
 import type { SessionToken } from './utils/api'
 
 export default function App() {
@@ -31,24 +32,7 @@ export default function App() {
       <a className="skip-link" href="#main">
         דילוג לתוכן
       </a>
-      <header className="site-header">
-        <div className="site-header__inner">
-          <h1 className="site-title">
-            <a href={buildHash(SECTIONS[0])}>היצירות של אורי עמירם</a>
-          </h1>
-          <nav aria-label="ניווט ראשי">
-            <ul className="tabs">
-              {SECTIONS.map((s) => (
-                <li key={s.hash}>
-                  <a href={buildHash(s)} className="tab" aria-current={s.hash === section.hash ? 'page' : undefined}>
-                    {s.label}
-                  </a>
-                </li>
-              ))}
-            </ul>
-          </nav>
-        </div>
-      </header>
+      <SiteHeader current={section} entries={state === 'ready' ? entries : null} />
 
       <main id="main" className="main" tabIndex={-1}>
         <StatusBanner status={status} onDismiss={dismiss} />
