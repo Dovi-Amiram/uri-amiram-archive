@@ -60,6 +60,8 @@ from archive_utils import (  # noqa: E402
     Checkpoint,
     dumps_json,
     load_exclusions,
+    refresh_likes,
+    stable_id,
     make_entry,
     normalize_content,
     normalize_single_line,
@@ -622,14 +624,34 @@ def saved_post_ids(archive_dir=ARCHIVE_DIR) -> set[str]:
     return {path.stem.removeprefix("facebook-") for path in folder.glob("facebook-*.json")} if folder.is_dir() else set()
 
 
-def should_stop_new_only(mine_ids: list[str], saved: set[str], rounds_without_new: int, stop_after_known: int) -> bool:
+def should_stop_new_only(
+    mine_ids: list[str],
+    saved: set[str],
+    rounds_without_new: int,
+    stop_after_known: int,
+    oldest_seen: str | None = None,
+    likes_cutoff: str | None = None,
+) -> bool:
     """In --new-only mode, stop once enough already-archived posts were seen and scrolling
     further keeps yielding nothing new. The group page lists newest posts first, so everything
-    below that point is already archived. stop_after_known=0 disables early stopping."""
+    below that point is already archived. When refreshing recent likes (likes_cutoff), also keep
+    scrolling until a post older than the cutoff was seen. stop_after_known=0 disables stopping."""
     if not stop_after_known:
         return False
     known_seen = sum(1 for pid in mine_ids if pid in saved)
-    return known_seen >= stop_after_known and rounds_without_new >= 3
+    if known_seen < stop_after_known or rounds_without_new < 3:
+        return False
+    return likes_cutoff is None or (oldest_seen is not None and oldest_seen <= likes_cutoff)
+
+
+def likes_cutoff_for(days: int, now: datetime | None = None) -> str | None:
+    """ISO time before which archived posts' likes are not refreshed (None = no refresh)."""
+    if days <= 0:
+        return None
+    from datetime import timedelta
+
+    moment = (now or datetime.now(timezone.utc)) - timedelta(days=days)
+    return moment.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def run(args: argparse.Namespace) -> int:
@@ -649,10 +671,14 @@ def run(args: argparse.Namespace) -> int:
     skip_ids = saved_post_ids() if args.new_only else set()
     # ...and only posts newer than the newest archived one count (unless scanning full history).
     newer_than = newest_archived_post_time() if args.new_only and args.stop_after_known else None
+    # Like counts of archived posts are refreshed for recent posts (or all, with --refresh-all-likes).
+    refresh_all_likes = bool(args.new_only and args.refresh_all_likes)
+    likes_cutoff = None if refresh_all_likes or not args.new_only else likes_cutoff_for(args.likes_days)
     if args.new_only:
         log.info(
-            "new-only mode: %d posts already archived, %d excluded, newest archived post %s",
+            "new-only mode: %d posts already archived, %d excluded, newest archived post %s; likes refreshed for %s",
             len(skip_ids), len(excluded_ids), newer_than or "(any date)",
+            "all posts" if refresh_all_likes else f"posts since {likes_cutoff}" if likes_cutoff else "no posts",
         )
 
     def absorb(posts: list[FbPost]) -> None:
@@ -670,6 +696,7 @@ def run(args: argparse.Namespace) -> int:
         "postsSeen": 0,
         "stopReason": None,
         "newerThan": None,
+        "likesUpdated": [],
     }
 
     def finish(code: int, **extra: Any) -> int:
@@ -793,12 +820,16 @@ def run(args: argparse.Namespace) -> int:
                 new_count = sum(1 for p in mine if is_new_post(p, skip_ids, excluded_ids, newer_than)[0])
                 rounds_without_new = 0 if new_count > last_new_count else rounds_without_new + 1
                 last_new_count = new_count
-                if should_stop_new_only([p.post_id for p in mine], skip_ids | excluded_ids, rounds_without_new, args.stop_after_known):
+                dated = [p.created_at for p in mine if p.created_at]
+                if not refresh_all_likes and should_stop_new_only(
+                    [p.post_id for p in mine], skip_ids | excluded_ids, rounds_without_new, args.stop_after_known,
+                    oldest_seen=min(dated) if dated else None, likes_cutoff=likes_cutoff,
+                ):
                     log.info("reached already-archived posts (%d new found); stopping", new_count)
                     stop_reason = "reached-archived"
                     break
             if rounds % 10 == 0 and not args.dry_run:
-                _save_posts(collected, expected_names, checkpoint, args, final=False, request_context=context.request, skip_ids=skip_ids, excluded_ids=excluded_ids, report=report, newer_than=newer_than)
+                _save_posts(collected, expected_names, checkpoint, args, final=False, request_context=context.request, skip_ids=skip_ids, excluded_ids=excluded_ids, report=report, newer_than=newer_than, likes_cutoff=likes_cutoff, refresh_all_likes=refresh_all_likes)
             page.mouse.wheel(0, random.randint(600, 1100))
             page.wait_for_timeout(human_pause(args.scroll_pause_ms))
 
@@ -822,6 +853,7 @@ def run(args: argparse.Namespace) -> int:
         result = _save_posts(
             collected, expected_names, checkpoint, args, final=True, saved_before=saved_before,
             request_context=context.request, skip_ids=skip_ids, excluded_ids=excluded_ids, report=report, newer_than=newer_than,
+            likes_cutoff=likes_cutoff, refresh_all_likes=refresh_all_likes,
         )
         context.close()
     return finish(result)
@@ -831,9 +863,30 @@ def _record(post: FbPost) -> dict:
     return vars(post) | {"origin": sorted(post.origin), "photos": [vars(ph) for ph in post.photos]}
 
 
-def _save_posts(collected, expected_names, checkpoint, args, final: bool, saved_before=None, request_context=None, skip_ids=frozenset(), excluded_ids=frozenset(), report=None, newer_than: str | None = None) -> int:
+def _refresh_post_likes(post: FbPost, args, stats: dict, report: dict | None) -> None:
+    entry_id = stable_id("facebook", post.post_id)
+    if args.dry_run:
+        path = ARCHIVE_DIR / "palindromes" / f"{entry_id}.json"
+        try:
+            entry = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        changed = entry.get("likes") != post.likes and "likes" not in (entry.get("editedFields") or [])
+        result = (entry.get("likes"), post.likes) if changed else None
+    else:
+        result = refresh_likes(entry_id, "palindrome", post.likes)
+    if result is None:
+        return
+    stats["likesUpdated"] += 1
+    log.info("likes %s: %s -> %s", entry_id, result[0], result[1])
+    if report is not None and not any(u["id"] == entry_id for u in report["likesUpdated"]):
+        report["likesUpdated"].append({"id": entry_id, "old": result[0], "new": result[1]})
+
+
+def _save_posts(collected, expected_names, checkpoint, args, final: bool, saved_before=None, request_context=None, skip_ids=frozenset(), excluded_ids=frozenset(), report=None, newer_than: str | None = None,
+                likes_cutoff: str | None = None, refresh_all_likes: bool = False) -> int:
     scraped_at = now_iso()
-    stats = {"created": 0, "updated": 0, "refreshed": 0, "unchanged": 0, "alreadyArchived": 0, "excluded": 0, "notNewer": 0, "undated": 0, "otherAuthor": 0, "otherGroup": 0, "noText": 0, "withPhotos": 0, "photoFailures": 0}
+    stats = {"created": 0, "updated": 0, "refreshed": 0, "unchanged": 0, "alreadyArchived": 0, "excluded": 0, "notNewer": 0, "undated": 0, "likesUpdated": 0, "otherAuthor": 0, "otherGroup": 0, "noText": 0, "withPhotos": 0, "photoFailures": 0}
     examples = []
     others = []
     ordered = sorted(collected.values(), key=lambda p: p.created_at or "", reverse=True)
@@ -854,6 +907,9 @@ def _save_posts(collected, expected_names, checkpoint, args, final: bool, saved_
             new, reason = is_new_post(post, skip_ids, excluded_ids, newer_than)
             if not new:
                 stats[reason] += 1  # archived, deleted on the website, or not newer than the archive
+                recent = refresh_all_likes or (likes_cutoff and post.created_at and post.created_at >= likes_cutoff)
+                if reason == "alreadyArchived" and post.likes is not None and recent:
+                    _refresh_post_likes(post, args, stats, report)
                 continue
         elif post.post_id in excluded_ids:
             stats["excluded"] += 1  # deleted on the website
@@ -926,6 +982,17 @@ def main(argv: list[str] | None = None) -> int:
         "--new-only",
         action="store_true",
         help="only save posts whose id is not archived yet (existing entries are not touched)",
+    )
+    parser.add_argument(
+        "--likes-days",
+        type=int,
+        default=60,
+        help="with --new-only: also refresh like counts of archived posts from the last N days (0 = off)",
+    )
+    parser.add_argument(
+        "--refresh-all-likes",
+        action="store_true",
+        help="with --new-only: scroll the whole history and refresh like counts of all archived posts",
     )
     parser.add_argument(
         "--stop-after-known",

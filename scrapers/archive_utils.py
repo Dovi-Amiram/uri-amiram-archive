@@ -424,6 +424,26 @@ def upsert_entry(entry: ArchiveEntry, archive_dir: Path = ARCHIVE_DIR, force: bo
     return "updated"
 
 
+def refresh_likes(entry_id: str, category: str, likes: int, archive_dir: Path = ARCHIVE_DIR) -> tuple[int | None, int] | None:
+    """Update only the like count of an archived entry.
+
+    Returns (old, new) when the file changed, None when unchanged, missing, or when the likes were
+    edited by hand on the website (editedFields). No other field, including updatedAt, changes.
+    """
+    path = archive_dir / CATEGORY_DIRS[category] / safe_filename(entry_id)
+    if not path.exists() or not isinstance(likes, int) or likes < 0:
+        return None
+    entry = read_json(path)
+    if "likes" in (entry.get("editedFields") or []):
+        return None
+    old = entry.get("likes")
+    if old == likes:
+        return None
+    entry["likes"] = likes
+    write_json_atomic(path, order_fields(entry))
+    return old, likes
+
+
 def load_exclusions(path: Path | None = None) -> set[str]:
     """Entry ids deleted on the website (archive/excluded.json). Scrapers must not re-add them."""
     path = path or EXCLUSIONS_FILE

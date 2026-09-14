@@ -159,6 +159,7 @@ update-palindromes --dry-run       # only list the posts it would add
 update-palindromes --login         # log in to Facebook by hand (visible browser), then exit
 update-palindromes --no-push       # commit locally only
 update-palindromes --full-history  # scan the whole history for missed posts (slow)
+update-palindromes --refresh-all-likes   # also update like counts of ALL archived posts (~15-20 min)
 ```
 
 **Install the command once** (it is a small wrapper around `scripts/update_facebook.py` that uses
@@ -177,7 +178,12 @@ ln -sf "$PWD/bin/update-palindromes" ~/.local/bin/update-palindromes   # run in 
    <https://www.facebook.com/groups/1435021850049747/user/659364624/> — the only page scraped.
 
 New posts are saved with their photos (downloaded into `archive/attachments/facebook/`) and like
-counts. Existing entries, including anything edited on the website, are never modified.
+counts. Existing entries are not modified, except for their **like count**: every run also updates
+the likes of archived posts from the last 60 days that have changed on Facebook (`--likes-days N`
+to change the window, `0` to turn it off; `--refresh-all-likes` scrolls the whole history and
+updates every post). Only the `likes` number changes, and a count edited by hand on the website is
+never overwritten. New posts and like updates go into one commit, e.g.
+`Add 1 new palindrome post from Facebook; update likes on 12 posts`.
 
 **Steps and output.** The terminal shows each step: repository check and `git pull`, the scrape
 (one progress line per scroll), result checks and archive validation, the commit (listing each new
@@ -209,10 +215,6 @@ chmod 600 .facebook.env
 `.facebook.env` is git-ignored and read only by the scraper, and the values are never logged. The
 script warns if the file is readable by other users. It never tries to get past Facebook security
 checks, two-factor codes or CAPTCHAs; it stops and asks for `update-palindromes --login` instead.
-
-To refresh like counts on all existing posts, run the full scraper
-(`.venv/bin/python scrapers/facebook_scraper.py`) and commit the result; fields edited on the website
-are still left alone.
 
 ## 7. First-time Facebook login
 

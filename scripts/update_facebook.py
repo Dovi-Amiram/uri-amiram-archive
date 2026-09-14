@@ -6,6 +6,7 @@
     update-palindromes --login         # log in to Facebook by hand (visible browser), then exit
     update-palindromes --no-push       # commit locally only
     update-palindromes --full-history  # scan the whole history for anything missed (slow)
+    update-palindromes --refresh-all-likes   # also update like counts of ALL archived posts (~15-20 min)
 
 What it does
   1. Checks the repository (on main, no uncommitted archive changes) and pulls the latest version,
@@ -15,6 +16,9 @@ What it does
      (archive/excluded.json) and (c) are dated after the newest archived post — with their photos
      and like counts. Existing entries are never touched. It stops once it reaches archived posts.
      If the Facebook session expired it logs in with .facebook.env. (--full-history drops rule (c).)
+     It also updates the like counts of archived posts from the last 60 days that it sees
+     (--likes-days N to change, --refresh-all-likes for every post). Likes edited on the website
+     are never overwritten, and nothing but the like count changes.
   3. Checks the run for anything suspicious and validates the whole archive.
   4. Commits the new files in one commit and pushes; GitHub Actions redeploys the site.
 
@@ -150,10 +154,17 @@ def assess_report(report: dict[str, Any] | None, exit_code: int) -> Assessment:
     return result
 
 
-def commit_message(new_entries: list[dict]) -> str:
-    """Readable commit message listing the new posts (newest first)."""
+def commit_message(new_entries: list[dict], likes_updates: list[dict] | None = None) -> str:
+    """Readable commit message listing new posts (newest first) and like-count updates."""
     count = len(new_entries)
-    subject = "Add 1 new palindrome post from Facebook" if count == 1 else f"Add {count} new palindrome posts from Facebook"
+    likes_updates = likes_updates or []
+    parts = []
+    if count:
+        parts.append("Add 1 new palindrome post from Facebook" if count == 1 else f"Add {count} new palindrome posts from Facebook")
+    if likes_updates:
+        n = len(likes_updates)
+        parts.append(("update" if count else "Update") + f" likes on {n} post{'s' if n != 1 else ''}")
+    subject = "; ".join(parts) or "Update Facebook archive files"
     lines = []
     for entry in sorted(new_entries, key=lambda e: e.get("postedAt") or "", reverse=True):
         first_line = next((line.strip() for line in (entry.get("content") or "").splitlines() if line.strip()), "(תמונה)")
@@ -161,6 +172,11 @@ def commit_message(new_entries: list[dict]) -> str:
             first_line = first_line[:57] + "..."
         date = (entry.get("postedAt") or "")[:10] or "undated"
         lines.append(f"- {date} {entry['id']}: {first_line}")
+    if likes_updates:
+        if lines:
+            lines.append("")
+        lines.append("Likes:")
+        lines.extend(f"- {u['id']}: {u['old'] if u['old'] is not None else '-'} -> {u['new']}" for u in likes_updates)
     return subject + ("\n\n" + "\n".join(lines) if lines else "") + "\n"
 
 
@@ -198,6 +214,10 @@ def run_scraper(args: argparse.Namespace, console: Console) -> int:
         command += ["--new-only", "--save-raw", "--headed" if args.headed else "--headless"]
         if args.full_history:
             command += ["--stop-after-known", "0"]
+        if args.refresh_all_likes:
+            command += ["--refresh-all-likes"]
+        if args.likes_days is not None:
+            command += ["--likes-days", str(args.likes_days)]
         if args.dry_run:
             command.append("--dry-run")
     console.info("$ " + " ".join(Path(c).name if i < 2 else c for i, c in enumerate(command)))
@@ -213,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-push", action="store_true", help="commit but do not push")
     parser.add_argument("--no-pull", action="store_true", help="skip git pull (e.g. offline)")
     parser.add_argument("--full-history", action="store_true", help="scroll the whole history instead of stopping at known posts")
+    parser.add_argument("--refresh-all-likes", action="store_true", help="update like counts of all archived posts (scrolls whole history, ~15-20 min)")
+    parser.add_argument("--likes-days", type=int, default=None, help="refresh likes of archived posts from the last N days (default 60, 0 = off)")
     parser.add_argument("--headed", action="store_true", help="show the browser window")
     parser.add_argument("--allow-branch", action="store_true", help="allow running on a branch other than main")
     parser.add_argument("--no-notify", action="store_true", help="no bell / desktop notification")
@@ -230,6 +252,7 @@ def main(argv: list[str] | None = None) -> int:
     total = 3 if args.dry_run else 5
     problems = Assessment()
     new_count = 0
+    likes_updates: list[dict] = []
     try:
         console.step("Checking the repository", total)
         branch = preflight(args.allow_branch)
@@ -246,19 +269,30 @@ def main(argv: list[str] | None = None) -> int:
             raise UpdateError("the scrape did not complete correctly")
         new_ids = (report or {}).get("newPostIds") or []
         new_count = len(new_ids)
+        likes_updates = (report or {}).get("likesUpdated") or []
         console.ok(
             f"{report['postsSeen']} posts seen · {report.get('alreadyArchivedSeen', 0)} already archived · "
             f"{new_count} new · stopped: {report.get('stopReason')}"
         )
         if report.get("newerThan"):
             console.info(f"only posts after {report['newerThan']} count as new")
+        if likes_updates:
+            console.ok(f"like counts {'to update' if args.dry_run else 'updated'} on {len(likes_updates)} post(s)")
+            for u in likes_updates[:10]:
+                console.info(f"{u['id']}: {u['old'] if u['old'] is not None else '-'} → {u['new']}")
+        else:
+            console.info("no like counts changed")
 
         console.step("Checking the results", total)
         for warning in problems.warnings:
             console.warn(warning)
         if args.dry_run:
-            console.ok("dry run: nothing was saved" + (f"; would add {new_count} post(s)" if new_count else "; no new posts"))
-            return finish(console, args, problems, new_count, dry_run=True)
+            console.ok(
+                "dry run: nothing was saved"
+                + (f"; would add {new_count} post(s)" if new_count else "; no new posts")
+                + (f" and update likes on {len(likes_updates)}" if likes_updates else "")
+            )
+            return finish(console, args, problems, new_count, dry_run=True, likes_count=len(likes_updates))
         validate = subprocess.run(
             [sys.executable, str(REPO_ROOT / "scripts" / "build_archive_indexes.py"), "--check"], cwd=REPO_ROOT, capture_output=True, text=True
         )
@@ -269,18 +303,18 @@ def main(argv: list[str] | None = None) -> int:
 
         console.step("Committing", total)
         if not git("status", "--porcelain", "--", *ARCHIVE_PATHS).strip():
-            console.ok("no new posts, nothing to commit")
+            console.ok("no new posts or like changes, nothing to commit")
             console.step("Publishing", total)
             console.ok("nothing to publish")
-            return finish(console, args, problems, 0)
+            return finish(console, args, problems, 0, likes_count=len(likes_updates))
         git("add", "--", *ARCHIVE_PATHS)
         added = git("diff", "--cached", "--name-only", "--diff-filter=A", "--", "archive/palindromes").split()
         entries = [json.loads((REPO_ROOT / path).read_text(encoding="utf-8")) for path in added]
-        message = commit_message(entries) if entries else "Update Facebook archive files\n"
+        message = commit_message(entries, likes_updates)
         git("commit", "-m", message)
         new_count = len(entries)
         console.ok(message.splitlines()[0])
-        for line in message.splitlines()[2:12]:
+        for line in [l for l in message.splitlines()[2:] if l.startswith("- ")][:12]:
             console.info(line.removeprefix("- "))
 
         console.step("Publishing", total)
@@ -289,7 +323,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             git("push")
             console.ok(f"pushed; the site updates within a few minutes: {SITE_URL}")
-        return finish(console, args, problems, new_count)
+        return finish(console, args, problems, new_count, likes_count=len(likes_updates))
     except UpdateError as exc:
         if not problems.errors:
             problems.errors.append(str(exc))
@@ -299,7 +333,7 @@ def main(argv: list[str] | None = None) -> int:
         return finish(console, args, problems, new_count)
 
 
-def finish(console: Console, args: argparse.Namespace, problems: Assessment, new_count: int, dry_run: bool = False) -> int:
+def finish(console: Console, args: argparse.Namespace, problems: Assessment, new_count: int, dry_run: bool = False, likes_count: int = 0) -> int:
     if problems.errors:
         console.block("UPDATE FAILED", problems.errors + problems.warnings, "31")
         if not args.no_notify:
@@ -310,8 +344,10 @@ def finish(console: Console, args: argparse.Namespace, problems: Assessment, new
         if not args.no_notify:
             notify("update-palindromes: check the warnings", problems.warnings[0][:200], urgent=False)
     summary = f"{new_count} new palindrome post(s) {'found' if dry_run else 'archived'}" if new_count else "No new palindrome posts"
+    if likes_count:
+        summary += f"; like counts {'to update' if dry_run else 'updated'} on {likes_count} post(s)"
     print(f"\n{console._c('1;32', '✓ ' + summary)}")
-    if new_count and not problems.warnings and not args.no_notify and not dry_run:
+    if (new_count or likes_count) and not problems.warnings and not args.no_notify and not dry_run:
         notify("update-palindromes", summary, urgent=False)
     return 0
 

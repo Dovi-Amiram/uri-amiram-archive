@@ -181,3 +181,21 @@ def test_posts_linked_to_other_groups_are_rejected():
     assert fb.is_from_target_group(fb.FbPost("1", permalink="https://www.facebook.com/groups/1435021850049747/posts/1/"))
     assert fb.is_from_target_group(fb.FbPost("1", permalink=None))
     assert not fb.is_from_target_group(fb.FbPost("1", permalink="https://www.facebook.com/groups/999/posts/1/"))
+
+
+def test_new_only_keeps_scrolling_until_likes_window_is_covered():
+    saved = {str(i) for i in range(100)}
+    seen = [str(i) for i in range(40)]
+    cutoff = "2026-07-16T00:00:00Z"
+    # enough archived posts seen, but the oldest one is still inside the 60-day window
+    assert not fb.should_stop_new_only(seen, saved, 5, 30, oldest_seen="2026-08-01T00:00:00Z", likes_cutoff=cutoff)
+    assert fb.should_stop_new_only(seen, saved, 5, 30, oldest_seen="2026-07-01T00:00:00Z", likes_cutoff=cutoff)
+    assert fb.should_stop_new_only(seen, saved, 5, 30)  # likes refresh off
+
+
+def test_likes_cutoff_for():
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)
+    assert fb.likes_cutoff_for(60, now) == "2026-07-16T12:00:00Z"
+    assert fb.likes_cutoff_for(0, now) is None

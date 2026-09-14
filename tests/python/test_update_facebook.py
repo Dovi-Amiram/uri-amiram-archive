@@ -58,3 +58,15 @@ def test_logged_out_session_is_reported_as_login_problem():
 def test_wrong_page_is_an_error():
     result = uf.assess_report({"stopReason": "wrong-page", "landedOn": "https://www.facebook.com/groups/1435021850049747/"}, 1)
     assert any("did not open the group member page" in e for e in result.errors)
+
+
+def test_commit_message_with_likes_updates():
+    msg = uf.commit_message(
+        [{"id": "facebook-1", "postedAt": "2026-09-14T15:05:38Z", "content": "עשרת ימי תשובה"}],
+        [{"id": "facebook-2", "old": 0, "new": 7}, {"id": "facebook-3", "old": None, "new": 2}],
+    )
+    lines = msg.splitlines()
+    assert lines[0] == "Add 1 new palindrome post from Facebook; update likes on 2 posts"
+    assert "- facebook-2: 0 -> 7" in lines and "- facebook-3: - -> 2" in lines
+    only_likes = uf.commit_message([], [{"id": "facebook-2", "old": 0, "new": 1}])
+    assert only_likes.splitlines()[0] == "Update likes on 1 post"

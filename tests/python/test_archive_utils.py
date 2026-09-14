@@ -170,3 +170,22 @@ def test_load_exclusions(tmp_path):
     assert au.load_exclusions(path) == {"facebook-1", "tzura-2"}
     assert au.validate_exclusions({"entries": [{"id": 5}]})
     assert au.validate_exclusions({"entries": []}) == []
+
+
+def test_refresh_likes_changes_only_likes_and_respects_manual_edits(tmp_path):
+    entry = au.make_entry(source="facebook", category="palindrome", source_id="8", content="אבא", likes=0)
+    au.upsert_entry(entry, tmp_path)
+    path = tmp_path / "palindromes" / "facebook-8.json"
+    before = json.loads(path.read_text(encoding="utf-8"))
+
+    assert au.refresh_likes("facebook-8", "palindrome", 12, tmp_path) == (0, 12)
+    after = json.loads(path.read_text(encoding="utf-8"))
+    assert after["likes"] == 12
+    assert {k: v for k, v in after.items() if k != "likes"} == {k: v for k, v in before.items() if k != "likes"}
+    assert au.refresh_likes("facebook-8", "palindrome", 12, tmp_path) is None  # unchanged
+
+    after["editedFields"] = ["likes"]
+    au.write_json_atomic(path, after)
+    assert au.refresh_likes("facebook-8", "palindrome", 99, tmp_path) is None
+    assert json.loads(path.read_text(encoding="utf-8"))["likes"] == 12
+    assert au.refresh_likes("facebook-missing", "palindrome", 5, tmp_path) is None
