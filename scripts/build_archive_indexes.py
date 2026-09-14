@@ -3,6 +3,7 @@
 
 Reads   archive/creations/*.json and archive/palindromes/*.json
 Writes  public/data/creations.json, public/data/palindromes.json, public/data/version.json
+Copies  archive/attachments/ -> public/attachments/ (images referenced by entries)
 
 Every entry is validated (required fields, allowed category/source, unique ids, file
 placed in the directory matching its category). Any problem aborts with exit code 1.
@@ -17,6 +18,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -73,6 +75,9 @@ def load_archive(archive_dir: Path) -> tuple[dict[str, list[dict[str, Any]]], li
                 continue
             if entry["category"] != category:
                 errors.append(f"{rel}: category {entry['category']!r} does not match directory {dirname!r}")
+            for att in entry.get("attachments") or []:
+                if not (archive_dir / att["path"]).is_file():
+                    errors.append(f"{rel}: attachment file missing: archive/{att['path']}")
             if path.stem != entry["id"]:
                 errors.append(f"{rel}: filename does not match id {entry['id']!r}")
             if entry["id"] in seen_ids:
@@ -86,7 +91,23 @@ def load_archive(archive_dir: Path) -> tuple[dict[str, list[dict[str, Any]]], li
     return by_category, errors
 
 
-def build(archive_dir: Path = ARCHIVE_DIR, output_dir: Path = OUTPUT_DIR, check_only: bool = False) -> int:
+def sync_attachments(archive_dir: Path, public_dir: Path) -> int:
+    """Mirror archive/attachments/ into the site so images are served next to the app."""
+    source = archive_dir / "attachments"
+    if public_dir.exists():
+        shutil.rmtree(public_dir)
+    if not source.is_dir():
+        return 0
+    shutil.copytree(source, public_dir)
+    return sum(1 for f in public_dir.rglob("*") if f.is_file())
+
+
+def build(
+    archive_dir: Path = ARCHIVE_DIR,
+    output_dir: Path = OUTPUT_DIR,
+    check_only: bool = False,
+    attachments_dir: Path | None = None,
+) -> int:
     by_category, errors = load_archive(archive_dir)
     if errors:
         print(f"archive validation failed with {len(errors)} problem(s):", file=sys.stderr)
@@ -104,6 +125,7 @@ def build(archive_dir: Path = ARCHIVE_DIR, output_dir: Path = OUTPUT_DIR, check_
 
     for name, items in outputs.items():
         write_json_atomic(output_dir / name, items)
+    copied = sync_attachments(archive_dir, attachments_dir or output_dir.parent / "attachments")
     write_json_atomic(
         output_dir / "version.json",
         {
@@ -115,7 +137,7 @@ def build(archive_dir: Path = ARCHIVE_DIR, output_dir: Path = OUTPUT_DIR, check_
             "counts": counts,
         },
     )
-    print(f"wrote indexes to {output_dir}: {counts}")
+    print(f"wrote indexes to {output_dir}: {counts}; {copied} attachment file(s)")
     return 0
 
 

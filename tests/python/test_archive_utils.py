@@ -109,3 +109,37 @@ def test_checkpoint_roundtrip(tmp_path):
     assert again.done_set() == {"1"}
     again.reset()
     assert au.Checkpoint.load("test", tmp_path).done_set() == set()
+
+
+def _image(path="attachments/facebook/1-p.jpg"):
+    return {"type": "image", "path": path, "width": 10, "height": 10, "alt": None}
+
+
+def test_image_only_entries_are_valid_but_bad_attachments_are_not():
+    entry = au.make_entry(source="facebook", category="palindrome", source_id="1", content="", attachments=[_image()])
+    assert au.validate_entry(entry) == []
+    for bad in ("../../etc/passwd", "/abs.jpg", "creations/x.jpg"):
+        broken = dict(entry, attachments=[_image(bad)])
+        assert any("attachments[0].path" in e for e in au.validate_entry(broken))
+    assert any("likes" in e for e in au.validate_entry(dict(entry, likes=-1)))
+    assert any("likes" in e for e in au.validate_entry(dict(entry, likes="5")))
+
+
+def test_likes_change_refreshes_without_moving_updated_at(tmp_path):
+    first = au.make_entry(source="facebook", category="palindrome", source_id="9", content="אבא", likes=3)
+    assert au.upsert_entry(first, tmp_path) == "created"
+    path = tmp_path / "palindromes" / "facebook-9.json"
+    before = json.loads(path.read_text(encoding="utf-8"))
+
+    later = au.make_entry(source="facebook", category="palindrome", source_id="9", content="אבא", likes=5)
+    later["updatedAt"] = "2099-01-01T00:00:00Z"
+    assert au.upsert_entry(later, tmp_path) == "refreshed"
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["likes"] == 5
+    assert saved["updatedAt"] == before["updatedAt"]
+
+
+def test_entries_without_likes_do_not_get_the_field():
+    entry = au.make_entry(source="tzura", category="creation", source_id="3", content="x")
+    assert "likes" not in entry
+    assert "likes" not in au.order_fields(entry)

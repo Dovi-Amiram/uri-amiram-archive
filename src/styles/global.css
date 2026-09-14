@@ -1,18 +1,21 @@
 :root {
-  --paper: #f7f3ec;
-  --paper-raised: #fffdf9;
-  --ink: #2b2622;
-  --ink-soft: #5f564e;
-  --line: #e3dace;
-  --accent: #7a2e1f;
-  --accent-hover: #5e2116;
-  --accent-soft: #f1e3dc;
+  --paper: #f3f6f2;
+  --paper-raised: #fcfdfb;
+  --ink: #1f2a22;
+  --ink-soft: #536057;
+  --line: #d8e2d7;
+  --accent: #3b7a4f;
+  --accent-hover: #2d6140;
+  --accent-soft: #e2efe4;
+  --accent-contrast: #ffffff;
   --focus: #1f5fa8;
-  --success: #2f6b3a;
+  --success: #2d6140;
+  --gutter: clamp(0.75rem, 2.5vw, 2rem);
   --radius: 10px;
-  --shadow: 0 1px 2px rgb(60 40 20 / 6%), 0 4px 16px rgb(60 40 20 / 5%);
-  --font-text: 'Frank Ruhl Libre', 'David Libre', David, 'Times New Roman', serif;
-  --font-ui: Assistant, 'Segoe UI', Arial, 'Noto Sans Hebrew', sans-serif;
+  --shadow: 0 1px 2px rgb(20 50 30 / 6%), 0 4px 16px rgb(20 50 30 / 6%);
+  /* Modern, readable system fonts: David where installed (Windows), otherwise Arial. */
+  --font-text: David, Arial, 'Helvetica Neue', Helvetica, 'Noto Sans Hebrew', sans-serif;
+  --font-ui: Arial, 'Helvetica Neue', Helvetica, 'Noto Sans Hebrew', sans-serif;
 
   color-scheme: light;
   direction: rtl;
@@ -81,15 +84,17 @@ body.modal-open {
 }
 
 .site-header {
-  background: var(--paper-raised);
-  border-bottom: 1px solid var(--line);
+  color: var(--accent-contrast);
+  background: var(--accent);
 }
 
 .site-header__inner,
 .main,
 .site-footer {
-  width: min(100% - 2rem, 60rem);
+  width: 100%;
+  max-width: 110rem;
   margin-inline: auto;
+  padding-inline: var(--gutter);
 }
 
 .site-header__inner {
@@ -100,7 +105,7 @@ body.modal-open {
 .site-title {
   margin: 0 0 1.25rem;
   font-family: var(--font-text);
-  font-weight: 500;
+  font-weight: 700;
   font-size: clamp(1.8rem, 1.2rem + 2.5vw, 2.8rem);
   letter-spacing: 0.01em;
 }
@@ -122,7 +127,7 @@ body.modal-open {
 .tab {
   display: inline-block;
   padding: 0.6rem 1.4rem 0.7rem;
-  color: var(--ink-soft);
+  color: rgb(255 255 255 / 78%);
   font-size: 1.15rem;
   font-weight: 600;
   text-decoration: none;
@@ -130,12 +135,16 @@ body.modal-open {
 }
 
 .tab:hover {
-  color: var(--ink);
+  color: #fff;
 }
 
 .tab[aria-current='page'] {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
+  color: #fff;
+  border-bottom-color: #fff;
+}
+
+.site-header :focus-visible {
+  outline-color: #fff;
 }
 
 .main {
@@ -251,7 +260,7 @@ textarea {
   font: inherit;
   color: var(--ink);
   background: var(--paper-raised);
-  border: 1px solid #cfc3b3;
+  border: 1px solid #bccbbd;
   border-radius: var(--radius);
 }
 
@@ -304,6 +313,7 @@ textarea:focus-visible {
 
 .entry-list {
   display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 24rem), 1fr));
   gap: 1.25rem;
   margin: 0;
   padding: 0;
@@ -311,7 +321,7 @@ textarea:focus-visible {
 }
 
 .entry-list--grid {
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr));
 }
 
 .card {
@@ -342,8 +352,8 @@ textarea:focus-visible {
 
 .work-text {
   font-family: var(--font-text);
-  font-size: 1.12rem;
-  line-height: 1.85;
+  font-size: 1.15rem;
+  line-height: 1.75;
   white-space: pre-wrap;
   overflow-wrap: break-word;
 }
@@ -374,6 +384,44 @@ a.entry-meta__source:hover {
   color: var(--accent);
 }
 
+.entry-meta__likes {
+  font-variant-numeric: tabular-nums;
+}
+
+.entry-images {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.entry-images img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  background: var(--accent-soft);
+}
+
+.entry-images--preview {
+  position: relative;
+}
+
+.entry-images--preview img {
+  max-height: 16rem;
+  object-fit: cover;
+}
+
+.entry-images__more {
+  position: absolute;
+  inset-block-end: 0.5rem;
+  inset-inline-start: 0.5rem;
+  padding: 0.1rem 0.6rem;
+  color: #fff;
+  background: rgb(0 0 0 / 60%);
+  border-radius: 999px;
+  font-size: 0.85rem;
+}
+
 .badge {
   padding: 0.05rem 0.55rem;
   color: var(--accent);
@@ -400,7 +448,7 @@ a.entry-meta__source:hover {
   margin-bottom: 1.25rem;
   padding: 0.6rem 1rem;
   background: var(--accent-soft);
-  border: 1px solid #e2c8bc;
+  border: 1px solid #b9d6bf;
   border-radius: var(--radius);
 }
 
@@ -409,8 +457,8 @@ a.entry-meta__source:hover {
 }
 
 .status-banner--published {
-  background: #e5f1e6;
-  border-color: #bcd9c0;
+  background: #d7ecdb;
+  border-color: #a9cfb1;
   color: var(--success);
 }
 
@@ -449,7 +497,7 @@ a.entry-meta__source:hover {
 }
 
 .dialog::backdrop {
-  background: rgb(30 22 15 / 45%);
+  background: rgb(15 35 22 / 45%);
 }
 
 .dialog__panel {

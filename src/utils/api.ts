@@ -1,4 +1,3 @@
-import type { ArchiveEntry } from '../types/archive'
 import type { NewEntryPayload } from './validation'
 
 /**
@@ -47,7 +46,8 @@ export async function login(password: string): Promise<SessionToken> {
 }
 
 export interface CreateEntryResponse {
-  entry: ArchiveEntry
+  /** Raw entry as committed; parsed with parseEntry before use. */
+  entry: unknown
   path: string
   commitSha: string | null
 }

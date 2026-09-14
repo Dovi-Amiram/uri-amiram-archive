@@ -1,5 +1,6 @@
 import type { ArchiveEntry } from '../types/archive'
 import { makePreview } from '../utils/archive'
+import { EntryImages } from './EntryImages'
 import { EntryMeta } from './EntryMeta'
 
 interface EntryCardProps {
@@ -22,11 +23,14 @@ export function EntryCard({ entry, pending, onOpen, compact }: EntryCardProps) {
         </h3>
       )}
       <EntryMeta entry={entry} pending={pending} />
-      <p className="work-text card__text">
-        {preview.text}
-        {preview.truncated && <span aria-hidden="true">…</span>}
-      </p>
-      {preview.truncated && (
+      {preview.text && (
+        <p className="work-text card__text">
+          {preview.text}
+          {preview.truncated && <span aria-hidden="true">…</span>}
+        </p>
+      )}
+      <EntryImages images={entry.attachments} preview />
+      {(preview.truncated || entry.attachments.length > 1) && (
         <button type="button" className="text-button" onClick={() => onOpen(entry)}>
           להמשך קריאה<span className="visually-hidden">: {entry.title ?? 'טקסט מלא'}</span>
         </button>

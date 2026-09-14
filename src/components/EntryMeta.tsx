@@ -21,6 +21,11 @@ export function EntryMeta({ entry, pending }: { entry: ArchiveEntry; pending?: b
       ) : (
         entry.source === 'manual' && !pending && <span className="entry-meta__source">{SOURCE_LABELS.manual}</span>
       )}
+      {entry.likes !== null && (
+        <span className="entry-meta__likes" aria-label={`${entry.likes} לייקים`}>
+          <span aria-hidden="true">👍</span> {entry.likes.toLocaleString('he-IL')}
+        </span>
+      )}
       {pending && <span className="badge">ממתין לפרסום</span>}
     </p>
   )

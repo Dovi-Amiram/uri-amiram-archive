@@ -29,7 +29,7 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Literal, TypedDict
+from typing import Any, Iterable, Literal, NotRequired, TypedDict
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ARCHIVE_DIR = REPO_ROOT / "archive"
@@ -59,10 +59,16 @@ FIELD_ORDER = (
     "createdAt",
     "updatedAt",
     "attachments",
+    "likes",
 )
 REQUIRED_FIELDS = ("id", "source", "category", "author", "content", "createdAt", "updatedAt")
 # Fields that describe the work itself; a change in these means the entry was really updated.
 CONTENT_FIELDS = ("source", "category", "author", "title", "content", "postedAt", "sourceUrl", "sourceId", "attachments")
+# Source metadata that changes over time (e.g. Facebook reactions). Refreshed without moving updatedAt.
+METADATA_FIELDS = ("likes",)
+# Optional fields: may be absent from older files.
+OPTIONAL_FIELDS = ("likes",)
+ATTACHMENTS_DIR = ARCHIVE_DIR / "attachments"
 
 
 class ArchiveEntry(TypedDict):
@@ -79,6 +85,7 @@ class ArchiveEntry(TypedDict):
     createdAt: str
     updatedAt: str
     attachments: list[Any]
+    likes: NotRequired[int | None]
 
 
 # --------------------------------------------------------------------------- logging
@@ -209,13 +216,14 @@ def make_entry(
     source_url: str | None = None,
     scraped_at: str | None = None,
     attachments: list[Any] | None = None,
+    likes: int | None = None,
 ) -> ArchiveEntry:
     if entry_id is None:
         if source_id is None:
             raise ValueError("either entry_id or source_id is required")
         entry_id = stable_id(source, source_id)
     ts = now_iso()
-    return {
+    entry: ArchiveEntry = {
         "id": entry_id,
         "source": source,  # type: ignore[typeddict-item]
         "category": category,  # type: ignore[typeddict-item]
@@ -230,10 +238,13 @@ def make_entry(
         "updatedAt": ts,
         "attachments": list(attachments or []),
     }
+    if likes is not None:
+        entry["likes"] = likes
+    return entry
 
 
 def order_fields(entry: dict[str, Any]) -> dict[str, Any]:
-    ordered = {k: entry.get(k) for k in FIELD_ORDER}
+    ordered = {k: entry.get(k) for k in FIELD_ORDER if k in entry or k not in OPTIONAL_FIELDS}
     ordered["attachments"] = ordered["attachments"] or []
     # Keep unknown extra fields (future extensions) after the known ones.
     ordered.update({k: v for k, v in entry.items() if k not in ordered})
@@ -246,11 +257,11 @@ def validate_entry(entry: Any) -> list[str]:
         return ["entry is not a JSON object"]
     errors: list[str] = []
     for key in REQUIRED_FIELDS:
-        if key not in entry or entry[key] in (None, ""):
+        if key not in entry or entry[key] is None or (entry[key] == "" and key != "content"):
             errors.append(f"missing required field {key!r}")
     for key in FIELD_ORDER:
         if key not in entry:
-            if key not in REQUIRED_FIELDS:
+            if key not in REQUIRED_FIELDS and key not in OPTIONAL_FIELDS:
                 errors.append(f"missing field {key!r} (use null when unknown)")
     if entry.get("source") not in SOURCES:
         errors.append(f"invalid source {entry.get('source')!r}")
@@ -262,7 +273,10 @@ def validate_entry(entry: Any) -> list[str]:
     for key in ("title", "sourceUrl", "sourceId", "postedAt", "scrapedAt"):
         if entry.get(key) is not None and not isinstance(entry[key], str):
             errors.append(f"field {key!r} must be a string or null")
-    if isinstance(entry.get("content"), str) and not entry["content"].strip():
+    has_images = isinstance(entry.get("attachments"), list) and any(
+        isinstance(a, dict) and a.get("type") == "image" for a in entry["attachments"]
+    )
+    if isinstance(entry.get("content"), str) and not entry["content"].strip() and not has_images:
         errors.append("content is empty")
     for key in ("postedAt", "scrapedAt", "createdAt", "updatedAt"):
         value = entry.get(key)
@@ -270,6 +284,15 @@ def validate_entry(entry: Any) -> list[str]:
             errors.append(f"field {key!r} is not a valid ISO date: {value!r}")
     if "attachments" in entry and not isinstance(entry["attachments"], list):
         errors.append("attachments must be a list")
+    elif isinstance(entry.get("attachments"), list):
+        for i, att in enumerate(entry["attachments"]):
+            if not isinstance(att, dict) or att.get("type") != "image" or not isinstance(att.get("path"), str):
+                errors.append(f"attachments[{i}] must be an object with type 'image' and a path")
+            elif att["path"].startswith("/") or ".." in att["path"].split("/") or not att["path"].startswith("attachments/"):
+                errors.append(f"attachments[{i}].path must be relative to archive/attachments/")
+    likes = entry.get("likes")
+    if likes is not None and (not isinstance(likes, int) or isinstance(likes, bool) or likes < 0):
+        errors.append("likes must be a non-negative integer or null")
     if isinstance(entry.get("id"), str):
         try:
             if safe_filename(entry["id"]) != f"{entry['id']}.json":
@@ -348,8 +371,9 @@ def iter_archive_files(archive_dir: Path = ARCHIVE_DIR) -> Iterable[Path]:
 def upsert_entry(entry: ArchiveEntry, archive_dir: Path = ARCHIVE_DIR, force: bool = False) -> str:
     """Create or update the entry's JSON file.
 
-    Returns "created", "updated" or "unchanged". An existing file keeps its createdAt;
-    updatedAt only moves when the work's actual fields changed (or force=True).
+    Returns "created", "updated", "refreshed" (only metadata such as likes changed) or
+    "unchanged". An existing file keeps its createdAt; updatedAt only moves when the work's
+    actual fields changed (or force=True).
     Manual edits to fields not provided by the scraper are not overwritten with nulls.
     """
     errors = validate_entry(entry)
@@ -370,9 +394,17 @@ def upsert_entry(entry: ArchiveEntry, archive_dir: Path = ARCHIVE_DIR, force: bo
     merged["scrapedAt"] = entry.get("scrapedAt") or existing.get("scrapedAt")
     merged["createdAt"] = existing.get("createdAt") or entry["createdAt"]
 
+    for key in METADATA_FIELDS:
+        if entry.get(key) is not None:
+            merged[key] = entry[key]
+
     changed = any(merged.get(k) != existing.get(k) for k in CONTENT_FIELDS)
+    refreshed = any(merged.get(k) != existing.get(k) for k in METADATA_FIELDS)
     if not changed and not force:
-        return "unchanged"
+        if not refreshed:
+            return "unchanged"
+        write_json_atomic(path, order_fields(merged))
+        return "refreshed"
     merged["updatedAt"] = entry["updatedAt"]
     write_json_atomic(path, order_fields(merged))
     return "updated"

@@ -5,6 +5,23 @@
   "permalink": "https://www.facebook.com/groups/1435021850049747/permalink/1846966438855284/",
   "author_id": "659364624",
   "author_name": "Uri Amiram",
+  "likes": 8,
+  "photos": [
+    {
+      "photo_id": "10155751610434625",
+      "uri": "https://scontent.ftlv18-1.fna.fbcdn.net/v/t39.30808-6/471965794_10162977912474625_6324463204668983795_n.jpg?stp=dst-jpg_tt6&cstp=mx600x700&ctp=s600x700&_nc_cat=110&ccb=1-7&_nc_sid=33274f&_nc_ohc=Yu7mL7DZrBwQ7kNvwELojuq&_nc_oc=AdqnOOTK_6vn4g1f9VH2eVAeCWeyZalZjh-qYR33AOZOXG1lPk-1rQvu9_TRhFZUGhE&_nc_zt=23&_nc_ht=scontent.ftlv18-1.fna&_nc_gid=zNDL5HiFssPYBrPR2CcApw&_nc_ss=7f2a8&oh=00_AQJqPzx-YqlPvzPXVh22D2PuZj-dlSqtkK6YCFF7lFkfzw&oe=6AADA00C",
+      "width": 600,
+      "height": 700,
+      "alt": null
+    },
+    {
+      "photo_id": "10155751604939625",
+      "uri": "https://scontent.ftlv18-1.fna.fbcdn.net/v/t39.30808-6/468754186_10162864974899625_1314240066213767337_n.jpg?stp=dst-jpg_tt6&cstp=mx320x300&ctp=s320x300&_nc_cat=109&ccb=1-7&_nc_sid=33274f&_nc_ohc=ozGgncCV4WkQ7kNvwGL9cU9&_nc_oc=AdrSQkEIVPVKdxBOzg96OVCAFgputSkArj-NaGRCK3J1iqFcvnk59vA87GTK0Q3WpQM&_nc_zt=23&_nc_ht=scontent.ftlv18-1.fna&_nc_gid=zNDL5HiFssPYBrPR2CcApw&_nc_ss=7f2a8&oh=00_AQKLGCObr089theDXbUZIK_zqQuz27dXLIrCsT_vyH0ubQ&oe=6AADC92B",
+      "width": 320,
+      "height": 300,
+      "alt": null
+    }
+  ],
   "origin": [
     "json"
   ]

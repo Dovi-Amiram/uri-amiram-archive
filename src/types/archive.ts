@@ -16,10 +16,21 @@ export interface ArchiveEntry {
   scrapedAt: string | null
   createdAt: string
   updatedAt: string
-  attachments: unknown[]
+  attachments: ImageAttachment[]
+  /** Total reactions on the original post (Facebook), when known. */
+  likes: number | null
 }
 
-export type SortMode = 'newest' | 'oldest' | 'title'
+/** An image stored in archive/attachments/, served from the site at BASE_URL + path. */
+export interface ImageAttachment {
+  type: 'image'
+  path: string
+  width: number | null
+  height: number | null
+  alt: string | null
+}
+
+export type SortMode = 'newest' | 'oldest' | 'title' | 'likes'
 
 export interface SectionInfo {
   category: Category

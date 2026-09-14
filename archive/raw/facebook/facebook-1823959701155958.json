@@ -5,6 +5,16 @@
   "permalink": "https://www.facebook.com/groups/1435021850049747/permalink/1823959701155958/",
   "author_id": "659364624",
   "author_name": "Uri Amiram",
+  "likes": 12,
+  "photos": [
+    {
+      "photo_id": "10155572069489625",
+      "uri": "https://scontent.fsdv1-2.fna.fbcdn.net/v/t39.30808-6/468523175_10162825020094625_4079642544395615322_n.jpg?stp=dst-jpg_tt6&cstp=mx400x300&ctp=s400x300&_nc_cat=100&ccb=1-7&_nc_sid=536f4a&_nc_ohc=L8dh7rFYf58Q7kNvwE3qSzH&_nc_oc=Adoc0LmySIn-1LNje6NVLSYCPvJ5fvclGEX4Z1lNBrNZbK2PeUOZunOKQA4WFUj9UeA&_nc_zt=23&_nc_ht=scontent.fsdv1-2.fna&_nc_gid=NO-XaUDhw5n2gZDaexomRA&_nc_ss=7f2a8&oh=00_AQKBCiiYCWxEH0-W4i55lZje41vc1nvwXXXMTMIpCOP3UA&oe=6AADB12D",
+      "width": 400,
+      "height": 300,
+      "alt": null
+    }
+  ],
   "origin": [
     "json"
   ]

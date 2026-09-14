@@ -52,9 +52,11 @@ from typing import Any, Iterator
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from archive_utils import (  # noqa: E402
     ARCHIVE_DIR,
+    ATTACHMENTS_DIR,
     DEFAULT_AUTHOR,
     RAW_DIR,
     REPO_ROOT,
+    STATE_DIR,
     Checkpoint,
     dumps_json,
     make_entry,
@@ -62,6 +64,7 @@ from archive_utils import (  # noqa: E402
     normalize_single_line,
     now_iso,
     setup_logging,
+    slugify_id_part,
     upsert_entry,
     write_json_atomic,
 )
@@ -79,6 +82,15 @@ log = logging.getLogger("facebook")
 
 
 @dataclass
+class FbPhoto:
+    photo_id: str
+    uri: str
+    width: int | None = None
+    height: int | None = None
+    alt: str | None = None
+
+
+@dataclass
 class FbPost:
     post_id: str
     text: str | None = None
@@ -86,6 +98,8 @@ class FbPost:
     permalink: str | None = None
     author_id: str | None = None
     author_name: str | None = None
+    likes: int | None = None  # total reactions, as shown next to the post
+    photos: list["FbPhoto"] = field(default_factory=list)
     origin: set[str] = field(default_factory=set)  # {"json", "dom"}
 
     def merge(self, other: "FbPost") -> None:
@@ -97,6 +111,10 @@ class FbPost:
         self.permalink = self.permalink or other.permalink
         self.author_id = self.author_id or other.author_id
         self.author_name = self.author_name or other.author_name
+        if other.likes is not None and (self.likes is None or "json" in other.origin):
+            self.likes = other.likes
+        known = {ph.photo_id for ph in self.photos}
+        self.photos.extend(ph for ph in other.photos if ph.photo_id not in known)
         self.origin |= other.origin
 
 
@@ -171,6 +189,72 @@ def _story_message(story: dict) -> str | None:
     )
 
 
+# Sub-trees of a story that belong to someone/something else: comments, the shared original of
+# a share, and the author's avatar. Likes and photos are never taken from these.
+_FOREIGN_KEYS = frozenset(
+    {"attached_story", "interesting_top_level_comments", "comment", "comments", "comment_list_renderer",
+     "actor_photo", "actors", "profile_picture", "owning_profile", "to", "group"}
+)
+
+
+def _walk_own(obj: Any) -> Iterator[dict]:
+    """Like _walk, but does not descend into _FOREIGN_KEYS."""
+    stack = [obj]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            yield cur
+            stack.extend(v for k, v in cur.items() if k not in _FOREIGN_KEYS)
+        elif isinstance(cur, list):
+            stack.extend(cur)
+
+
+def _story_likes(story: dict) -> int | None:
+    """Total reaction count of the post itself (the number shown beside the reaction icons)."""
+    for d in _walk_own(story):
+        renderer = d.get("comet_ufi_summary_and_actions_renderer")
+        if not isinstance(renderer, dict):
+            continue
+        feedback = renderer.get("feedback") or {}
+        for f in _walk_own(feedback):
+            rc = f.get("reaction_count")
+            if isinstance(rc, dict) and isinstance(rc.get("count"), int):
+                return rc["count"]
+        edges = (feedback.get("top_reactions") or {}).get("edges") or []
+        counts = [e.get("reaction_count") for e in edges if isinstance(e, dict)]
+        if counts and all(isinstance(c, int) for c in counts):
+            return sum(counts)
+    return None
+
+
+_PLACEHOLDER_ALT = re.compile(r"no photo description|אין תיאור", re.IGNORECASE)
+_IMAGE_KEYS = ("photo_image", "viewer_image", "image", "massive_image", "large_image", "blurred_image")
+
+
+def _story_photos(story: dict) -> list[FbPhoto]:
+    """Photos attached to the post itself (largest available rendition of each)."""
+    photos: dict[str, FbPhoto] = {}
+    for d in _walk_own(story):
+        if d.get("__typename") != "Photo" or not d.get("id"):
+            continue
+        best = None
+        for key in _IMAGE_KEYS:
+            img = d.get(key)
+            if isinstance(img, dict) and isinstance(img.get("uri"), str) and img["uri"].startswith("https://"):
+                if best is None or (img.get("width") or 0) > (best.get("width") or 0):
+                    best = img
+        if best is None:
+            continue
+        photo_id = str(d["id"])
+        current = photos.get(photo_id)
+        if current is None or (best.get("width") or 0) > (current.width or 0):
+            alt = d.get("accessibility_caption")
+            if not isinstance(alt, str) or _PLACEHOLDER_ALT.search(alt):
+                alt = None  # Facebook's "No photo description available." is not a description
+            photos[photo_id] = FbPhoto(photo_id, best["uri"], best.get("width"), best.get("height"), alt)
+    return list(photos.values())
+
+
 def collect_stories_from_json(payload: Any) -> list[FbPost]:
     """Find top-level post objects in any Facebook JSON payload.
 
@@ -195,6 +279,8 @@ def collect_stories_from_json(payload: Any) -> list[FbPost]:
             permalink=url,
             author_id=str(actor["id"]) if actor.get("id") else None,
             author_name=actor.get("name"),
+            likes=_story_likes(d),
+            photos=_story_photos(d),
             origin={"json"},
         )
         if post_id in posts:
@@ -300,7 +386,7 @@ def is_target_author(post: FbPost, expected_names: set[str]) -> bool:
     return bool(post.author_name) and normalize_single_line(post.author_name) in expected_names
 
 
-def to_entry(post: FbPost, scraped_at: str):
+def to_entry(post: FbPost, scraped_at: str, attachments: list[dict] | None = None):
     return make_entry(
         source="facebook",
         category="palindrome",
@@ -311,7 +397,54 @@ def to_entry(post: FbPost, scraped_at: str):
         posted_at=post.created_at,
         source_url=canonical_permalink(post.post_id),
         scraped_at=scraped_at,
+        attachments=attachments,
+        likes=post.likes,
     )
+
+
+_EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}
+
+
+def download_photos(post: FbPost, request_context) -> list[dict]:
+    """Download the post's photos into archive/attachments/facebook/ (Facebook CDN links expire).
+
+    Already-downloaded files are reused. Returns canonical attachment objects.
+    """
+    folder = ATTACHMENTS_DIR / "facebook"
+    attachments = []
+    for index, photo in enumerate(post.photos, start=1):
+        stem = f"{post.post_id}-{slugify_id_part(photo.photo_id)}"
+        existing = sorted(folder.glob(f"{stem}.*")) if folder.is_dir() else []
+        if existing:
+            path = existing[0]
+        else:
+            try:
+                response = request_context.get(photo.uri, timeout=60_000)
+            except Exception as exc:
+                log.warning("post %s photo %s: download failed (%s)", post.post_id, photo.photo_id, exc)
+                continue
+            content_type = (response.headers.get("content-type") or "").split(";")[0].strip()
+            if not response.ok or content_type not in _EXTENSIONS:
+                log.warning("post %s photo %s: HTTP %s %s", post.post_id, photo.photo_id, response.status, content_type)
+                continue
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / f"{stem}{_EXTENSIONS[content_type]}"
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_bytes(response.body())
+            tmp.replace(path)
+            time.sleep(random.uniform(0.3, 0.8))
+        attachments.append(
+            {
+                "type": "image",
+                "path": path.relative_to(ARCHIVE_DIR).as_posix(),
+                "width": photo.width,
+                "height": photo.height,
+                "alt": photo.alt,
+                "sourceId": photo.photo_id,
+                "order": index,
+            }
+        )
+    return attachments
 
 
 # =========================================================================== browser flow
@@ -359,6 +492,22 @@ def human_pause(base_ms: int) -> int:
     return int(base_ms * random.uniform(0.7, 1.5))
 
 
+def saved_post_ids(archive_dir=ARCHIVE_DIR) -> set[str]:
+    """Facebook post ids that already have an archive entry."""
+    folder = archive_dir / "palindromes"
+    return {path.stem.removeprefix("facebook-") for path in folder.glob("facebook-*.json")} if folder.is_dir() else set()
+
+
+def should_stop_new_only(mine_ids: list[str], saved: set[str], rounds_without_new: int, stop_after_known: int) -> bool:
+    """In --new-only mode, stop once enough already-archived posts were seen and scrolling
+    further keeps yielding nothing new. The group page lists newest posts first, so everything
+    below that point is already archived. stop_after_known=0 disables early stopping."""
+    if not stop_after_known:
+        return False
+    known_seen = sum(1 for pid in mine_ids if pid in saved)
+    return known_seen >= stop_after_known and rounds_without_new >= 3
+
+
 def run(args: argparse.Namespace) -> int:
     from playwright.sync_api import sync_playwright
 
@@ -370,6 +519,10 @@ def run(args: argparse.Namespace) -> int:
     expected_names = {DEFAULT_AUTHOR, *(args.author_name or [])}
 
     collected: dict[str, FbPost] = {}
+    # In --new-only mode these posts are neither re-saved nor refreshed.
+    skip_ids = saved_post_ids() if args.new_only else set()
+    if args.new_only:
+        log.info("new-only mode: %d posts already archived", len(skip_ids))
 
     def absorb(posts: list[FbPost]) -> None:
         for post in posts:
@@ -431,6 +584,8 @@ def run(args: argparse.Namespace) -> int:
         stale_rounds = 0
         rounds = 0
         last_count = -1
+        last_new_count = 0
+        rounds_without_new = 0
         while stale_rounds < args.max_stale_scrolls:
             rounds += 1
             expanded = page.evaluate(EXPAND_SEE_MORE_JS)
@@ -443,8 +598,9 @@ def run(args: argparse.Namespace) -> int:
                 log.warning("found %d articles but no post ids - selectors may be outdated", len(records))
                 debug.dump(page, "articles-without-ids", records[:5])
 
-            mine = [p for p in collected.values() if is_target_author(p, expected_names) and p.text]
-            log.info("scroll %d: %d posts seen, %d by target author with text", rounds, len(collected), len(mine))
+            mine = [p for p in collected.values() if is_target_author(p, expected_names) and (p.text or p.photos)]
+            with_photos = sum(1 for p in mine if p.photos)
+            log.info("scroll %d: %d posts seen, %d by target author (%d with photos)", rounds, len(collected), len(mine), with_photos)
             if len(collected) > last_count:
                 stale_rounds = 0
                 last_count = len(collected)
@@ -452,21 +608,36 @@ def run(args: argparse.Namespace) -> int:
                 stale_rounds += 1
             if args.max_posts and len(mine) >= args.max_posts:
                 break
+            if args.new_only:
+                new_count = sum(1 for p in mine if p.post_id not in skip_ids)
+                rounds_without_new = 0 if new_count > last_new_count else rounds_without_new + 1
+                last_new_count = new_count
+                if should_stop_new_only([p.post_id for p in mine], skip_ids, rounds_without_new, args.stop_after_known):
+                    log.info("reached already-archived posts (%d new found); stopping", new_count)
+                    break
             if rounds % 10 == 0 and not args.dry_run:
-                _save_posts(collected, expected_names, checkpoint, args, final=False)
+                _save_posts(collected, expected_names, checkpoint, args, final=False, request_context=context.request, skip_ids=skip_ids)
             page.mouse.wheel(0, random.randint(600, 1100))
             page.wait_for_timeout(human_pause(args.scroll_pause_ms))
 
         if args.debug:
-            write_json_atomic(DEBUG_DIR / "last-run-posts.json", [vars(p) | {"origin": sorted(p.origin)} for p in collected.values()])
+            write_json_atomic(DEBUG_DIR / "last-run-posts.json", [_record(p) for p in collected.values()])
+        # Save while the browser is still open: photo downloads use its session.
+        result = _save_posts(
+            collected, expected_names, checkpoint, args, final=True, saved_before=saved_before,
+            request_context=context.request, skip_ids=skip_ids,
+        )
         context.close()
+    return result
 
-    return _save_posts(collected, expected_names, checkpoint, args, final=True, saved_before=saved_before)
+
+def _record(post: FbPost) -> dict:
+    return vars(post) | {"origin": sorted(post.origin), "photos": [vars(ph) for ph in post.photos]}
 
 
-def _save_posts(collected, expected_names, checkpoint, args, final: bool, saved_before: set[str] | None = None) -> int:
+def _save_posts(collected, expected_names, checkpoint, args, final: bool, saved_before=None, request_context=None, skip_ids=frozenset()) -> int:
     scraped_at = now_iso()
-    stats = {"created": 0, "updated": 0, "unchanged": 0, "otherAuthor": 0, "noText": 0}
+    stats = {"created": 0, "updated": 0, "refreshed": 0, "unchanged": 0, "alreadyArchived": 0, "otherAuthor": 0, "noText": 0, "withPhotos": 0}
     examples = []
     others = []
     ordered = sorted(collected.values(), key=lambda p: p.created_at or "", reverse=True)
@@ -479,15 +650,25 @@ def _save_posts(collected, expected_names, checkpoint, args, final: bool, saved_
             stats["otherAuthor"] += 1
             others.append((post.post_id, post.author_id, post.author_name))
             continue
-        if not post.text or not normalize_content(post.text):
-            stats["noText"] += 1  # e.g. image-only posts; nothing to archive as text
+        if post.post_id in skip_ids:
+            stats["alreadyArchived"] += 1
             continue
-        entry = to_entry(post, scraped_at)
+        has_text = bool(post.text and normalize_content(post.text))
+        if not has_text and not post.photos:
+            stats["noText"] += 1  # e.g. a share of content that is no longer available
+            continue
+        if post.photos:
+            stats["withPhotos"] += 1
         if args.dry_run:
-            examples.append({"entry": entry, "extractedFrom": sorted(post.origin)})
+            entry = to_entry(post, scraped_at)
+            examples.append({"entry": entry, "photos": [vars(ph) for ph in post.photos], "extractedFrom": sorted(post.origin)})
             continue
+        attachments = download_photos(post, request_context) if (post.photos and request_context) else []
+        if post.photos and not attachments and not has_text:
+            continue  # image-only post whose image could not be downloaded; retry next run
+        entry = to_entry(post, scraped_at, attachments)
         if args.save_raw:
-            write_json_atomic(RAW_DIR / "facebook" / f"facebook-{post.post_id}.json", vars(post) | {"origin": sorted(post.origin)})
+            write_json_atomic(RAW_DIR / "facebook" / f"facebook-{post.post_id}.json", _record(post))
         stats[upsert_entry(entry, ARCHIVE_DIR)] += 1
         checkpoint.mark_done(post.post_id)
     if not args.dry_run:
@@ -503,6 +684,11 @@ def _save_posts(collected, expected_names, checkpoint, args, final: bool, saved_
         print(f"previously saved      : {len(saved_before)}")
     if others:
         print(f"skipped (not target author): {others[:10]}")
+    if args.new_only and not args.dry_run:
+        # Periodic saves may already have created some files, so compare against the archive.
+        new_ids = sorted(saved_post_ids() - skip_ids)
+        print(f"new posts archived    : {len(new_ids)} {new_ids}")
+        write_json_atomic(STATE_DIR / "facebook-last-new.json", {"finishedAt": now_iso(), "newPostIds": new_ids})
     if args.dry_run:
         print("\n==== parsed posts (dry run, not saved) ====")
         for example in examples:
@@ -523,6 +709,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--author-name", action="append", help="extra display name accepted as the author (repeatable)")
     parser.add_argument("--save-raw", action="store_true", help="also store raw extracted records in archive/raw/facebook")
     parser.add_argument("--force", action="store_true", help="ignore the checkpoint")
+    parser.add_argument(
+        "--new-only",
+        action="store_true",
+        help="only save posts whose id is not archived yet (existing entries are not touched)",
+    )
+    parser.add_argument(
+        "--stop-after-known",
+        type=int,
+        default=30,
+        help="with --new-only: stop after seeing N already-archived posts and no new ones (0 = scan full history)",
+    )
     parser.add_argument("--debug", action="store_true", help="save screenshots / HTML / records under scrapers/.debug/")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)

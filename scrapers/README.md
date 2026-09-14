@@ -96,10 +96,18 @@ All Facebook-specific logic is in the "Facebook-specific extraction" section of 
    `a[href*="/groups/<id>/posts/<postId>"]`, author links `/user/<id>`, message text from
    `[data-ad-rendering-role="story_message"]` / `[data-ad-comet-preview="message"]` /
    `[data-ad-preview="message"]`.
+3. **Likes** — `_story_likes()` reads the post's own reaction summary
+   (`comet_ufi_summary_and_actions_renderer.feedback … reaction_count.count`, falling back to
+   the sum of `top_reactions.edges[].reaction_count`). Comment reactions are never used.
+4. **Photos** — `_story_photos()` collects `__typename: "Photo"` objects in the post (largest of
+   `photo_image` / `viewer_image` / `image`), skipping avatars, comments and shared originals
+   (`_FOREIGN_KEYS`). Images are downloaded through the logged-in browser session into
+   `archive/attachments/facebook/<postId>-<photoId>.<ext>`, because Facebook image links expire.
+   Existing files are reused on reruns.
 
-Both are merged by post id; JSON wins for text and time. Posts whose author id is not
-`659364624` are skipped and listed in the summary. Posts without text (image-only) are skipped
-and counted.
+Both are merged by post id; JSON wins for text and time. Rerunning refreshes `likes` on existing
+entries. Posts whose author id is not `659364624` are skipped and listed in the summary. Posts
+with neither text nor a downloadable photo (e.g. shares of deleted content) are skipped and counted.
 
 ### When Facebook changes
 

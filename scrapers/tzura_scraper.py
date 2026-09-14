@@ -268,7 +268,7 @@ def run(args: argparse.Namespace) -> int:
     queue = [w.work_id for w in listings]
     listed_titles = {w.work_id: w.title for w in listings}
 
-    stats = {"created": 0, "updated": 0, "unchanged": 0, "skipped": 0, "failed": 0, "notAuthor": 0}
+    stats = {"created": 0, "updated": 0, "refreshed": 0, "unchanged": 0, "skipped": 0, "failed": 0, "notAuthor": 0}
     parsed_examples: list[dict] = []
     missing_fields: dict[str, list[str]] = {"title": [], "postedAt": []}
     extra_found: list[str] = []

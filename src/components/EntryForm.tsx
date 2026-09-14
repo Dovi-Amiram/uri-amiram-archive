@@ -1,6 +1,7 @@
 import { useId, useRef, useState, type FormEvent } from 'react'
 import type { ArchiveEntry, SectionInfo } from '../types/archive'
 import { ApiError, createEntry, isWriteApiConfigured, login, type SessionToken } from '../utils/api'
+import { parseEntry } from '../utils/archive'
 import { emptyForm, LIMITS, toPayload, validateEntryForm, type EntryFormValues, type FormErrors } from '../utils/validation'
 import { Dialog } from './Dialog'
 
@@ -66,7 +67,9 @@ export function EntryForm({ section, session, onSession, onClose, onSaved }: Ent
         setPassword('')
       }
       const result = await createEntry(active!.token, toPayload(values, section.category))
-      onSaved(result.entry)
+      const saved = parseEntry(result.entry)
+      if (!saved) throw new Error('אירעה שגיאה')
+      onSaved(saved)
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         onSession(null) // session expired: ask for the password again

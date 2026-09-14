@@ -1,10 +1,22 @@
-import type { ArchiveEntry, Category, SortMode, Source } from '../types/archive'
+import type { ArchiveEntry, Category, ImageAttachment, SortMode, Source } from '../types/archive'
 
 const SOURCES: readonly Source[] = ['tzura', 'facebook', 'manual']
 const CATEGORIES: readonly Category[] = ['creation', 'palindrome']
 
 const isString = (v: unknown): v is string => typeof v === 'string'
 const isNullableString = (v: unknown): v is string | null => v === null || v === undefined || typeof v === 'string'
+const numberOrNull = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+
+function parseAttachments(raw: unknown): ImageAttachment[] {
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap((a) => {
+    if (!a || typeof a !== 'object') return []
+    const r = a as Record<string, unknown>
+    // Only relative paths inside attachments/ are allowed.
+    if (r.type !== 'image' || !isString(r.path) || !/^attachments\/[\w./-]+$/.test(r.path) || r.path.includes('..')) return []
+    return [{ type: 'image' as const, path: r.path, width: numberOrNull(r.width), height: numberOrNull(r.height), alt: isString(r.alt) ? r.alt : null }]
+  })
+}
 
 /** Validate one raw object from a generated index. Returns null when it is not a usable entry. */
 export function parseEntry(raw: unknown): ArchiveEntry | null {
@@ -13,7 +25,8 @@ export function parseEntry(raw: unknown): ArchiveEntry | null {
   if (!isString(r.id) || !r.id) return null
   if (!SOURCES.includes(r.source as Source)) return null
   if (!CATEGORIES.includes(r.category as Category)) return null
-  if (!isString(r.content) || !r.content.trim()) return null
+  const attachments = parseAttachments(r.attachments)
+  if (!isString(r.content) || (!r.content.trim() && attachments.length === 0)) return null
   for (const key of ['title', 'postedAt', 'sourceUrl', 'sourceId', 'scrapedAt'] as const) {
     if (!isNullableString(r[key])) return null
   }
@@ -30,7 +43,8 @@ export function parseEntry(raw: unknown): ArchiveEntry | null {
     scrapedAt: (r.scrapedAt as string | null | undefined) || null,
     createdAt: isString(r.createdAt) ? r.createdAt : '',
     updatedAt: isString(r.updatedAt) ? r.updatedAt : '',
-    attachments: Array.isArray(r.attachments) ? r.attachments : [],
+    attachments,
+    likes: typeof r.likes === 'number' && r.likes >= 0 ? r.likes : null,
   }
 }
 
@@ -58,6 +72,12 @@ export function sortEntries(entries: readonly ArchiveEntry[], mode: SortMode): A
   }
   const list = [...entries]
   if (mode === 'title') return list.sort(byTitle)
+  if (mode === 'likes') {
+    const newestFirst = sortEntries(entries, 'newest')
+    const rank = new Map(newestFirst.map((e, i) => [e.id, i]))
+    // Most reactions first; entries without a count last; ties keep newest-first order.
+    return list.sort((a, b) => (b.likes ?? -1) - (a.likes ?? -1) || rank.get(a.id)! - rank.get(b.id)!)
+  }
   const direction = mode === 'newest' ? -1 : 1
   return list.sort((a, b) => {
     if (a.postedAt && b.postedAt) {

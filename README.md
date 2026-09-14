@@ -18,6 +18,7 @@ The site is fully static. Readers load files from GitHub Pages; no application s
 archive/                    ← THE ARCHIVE (canonical data, one JSON file per work)
   creations/*.json            tzura-<id>.json, manual-<uuid>.json
   palindromes/*.json          facebook-<postId>.json, manual-<uuid>.json
+  attachments/facebook/       images attached to Facebook posts (downloaded; Facebook links expire)
   raw/tzura/                  original HTML of each Tzura work (article only, no comments)
   raw/facebook/               raw extracted Facebook records (optional)
 scrapers/                   local Python scrapers (Tzura: requests+BeautifulSoup, Facebook: Playwright)
@@ -82,6 +83,8 @@ tests/python/               Python tests
 | `content` | full text; line breaks, stanza breaks, niqqud and punctuation preserved exactly |
 | `postedAt` | original publication date (`YYYY-MM-DD` or ISO datetime) or `null`; never invented |
 | `sourceUrl`, `sourceId` | original location, `null` for manual entries |
+| `attachments` | images: `{ "type": "image", "path": "attachments/facebook/<postId>-<photoId>.jpg", "width", "height", "alt" }`; `path` is relative to `archive/`. Content may be empty when there is an image |
+| `likes` | *optional*, Facebook posts only: total reactions on the post when last scraped. Updating it does not change `updatedAt` |
 
 Types: `src/types/archive.ts` (frontend), `worker/src/entry.ts` (Worker), `scrapers/archive_utils.py` (Python).
 
@@ -140,6 +143,24 @@ author id is `659364624`, and never stores comments or interacts with Facebook. 
 best-effort browser automation: Facebook changes its pages. See
 [scrapers/README.md → When Facebook changes](scrapers/README.md#when-facebook-changes).
 
+### Monthly update (new posts only)
+
+```bash
+.venv/bin/python scripts/update_facebook.py            # save new posts, commit and push
+.venv/bin/python scripts/update_facebook.py --dry-run  # just list the new posts it would save
+```
+
+The script pulls the latest repository, scrolls the group page from the newest post and saves
+only posts whose id is not archived yet (with their photos). It stops once it reaches posts that are
+already saved, validates the archive, then commits (`Add N new palindrome posts from Facebook`,
+listing each post) and pushes, and the site redeploys automatically. Existing entries are not
+modified. Options: `--no-push`, `--no-pull`, `--headed`, `--full-history` (scan the entire
+history for anything missed, slower). If Facebook's session expired, run the `--login` step
+below first.
+
+To also refresh like counts on all existing posts, run the full scraper
+(`scrapers/facebook_scraper.py`) and commit the changes.
+
 ## 7. First-time Facebook login
 
 ```bash
@@ -171,7 +192,12 @@ Validation fails the build on: invalid JSON, missing fields, bad `category`/`sou
 dates, duplicate ids, the same source item stored twice, a file in the wrong category directory,
 or a filename that differs from the id.
 
+The build also copies `archive/attachments/` to `public/attachments/` (git-ignored) so images are
+served with the site, and fails if an entry references a missing image file.
+
 Sorting: dated entries newest first; undated entries after them by title, then `createdAt`.
+On the site, creations can be sorted by newest / oldest / title and palindromes by newest /
+oldest / most likes.
 `version.json` contains `buildId` (content hash + commit) and `generatedAt`; the site polls it
 after a save to detect the new deployment.
 
@@ -233,7 +259,7 @@ password, run the same command again; existing sessions stop working immediately
 ```bash
 cd worker
 npm run deploy
-curl https://uri-amiram-archive-api.<your-subdomain>.workers.dev/api/health   # → {"ok":true}
+curl https://uri-amiram-archive-api.uri-amiram-archive-api.workers.dev/api/health   # → {"ok":true}
 ```
 
 ## 16. Connecting the Worker URL to the frontend
@@ -241,7 +267,7 @@ curl https://uri-amiram-archive-api.<your-subdomain>.workers.dev/api/health   # 
 The Worker URL is public (not a secret). It is stored in `.env.production`:
 
 ```text
-VITE_WRITE_API_URL=https://uri-amiram-archive-api.<your-subdomain>.workers.dev
+VITE_WRITE_API_URL=https://uri-amiram-archive-api.uri-amiram-archive-api.workers.dev
 ```
 
 Commit and push; the next deploy enables the add buttons. If the Pages origin ever changes,

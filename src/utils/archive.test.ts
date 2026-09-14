@@ -16,6 +16,7 @@ const entry = (overrides: Partial<ArchiveEntry>): ArchiveEntry => ({
   createdAt: '2026-01-01T00:00:00Z',
   updatedAt: '2026-01-01T00:00:00Z',
   attachments: [],
+  likes: null,
   ...overrides,
 })
 
@@ -49,6 +50,24 @@ describe('parseArchive', () => {
   it('fills optional fields with safe defaults', () => {
     const parsed = parseEntry({ id: 'm', source: 'manual', category: 'palindrome', content: 'ילד כותב בתוך דלי' })
     expect(parsed).toMatchObject({ title: null, postedAt: null, sourceUrl: null, attachments: [], author: 'אורי עמירם' })
+  })
+
+  it('reads likes and safe image attachments, allowing image-only entries', () => {
+    const parsed = parseEntry({
+      id: 'facebook-1',
+      source: 'facebook',
+      category: 'palindrome',
+      content: '',
+      likes: 7,
+      attachments: [
+        { type: 'image', path: 'attachments/facebook/1-p.jpg', width: 600, height: 450, alt: null },
+        { type: 'image', path: '../../secret.jpg' },
+        { type: 'video', path: 'attachments/facebook/v.mp4' },
+      ],
+    })
+    expect(parsed?.likes).toBe(7)
+    expect(parsed?.attachments).toEqual([{ type: 'image', path: 'attachments/facebook/1-p.jpg', width: 600, height: 450, alt: null }])
+    expect(parseEntry({ id: 'x', source: 'facebook', category: 'palindrome', content: '', attachments: [] })).toBeNull()
   })
 
   it('throws when the index is not an array', () => {
@@ -108,6 +127,17 @@ describe('sortEntries', () => {
 
   it('by Hebrew title with untitled last', () => {
     expect(sortEntries(list, 'title').map((e) => e.id)).toEqual(['datetime', 'undated-a', 'old', 'new', 'undated-b', 'untitled'])
+  })
+
+  it('by likes, most first, unknown last, ties newest first', () => {
+    const liked = [
+      entry({ id: 'a', likes: 5, postedAt: '2020-01-01' }),
+      entry({ id: 'b', likes: 59, postedAt: '2019-01-01' }),
+      entry({ id: 'c', likes: null, postedAt: '2026-01-01' }),
+      entry({ id: 'd', likes: 5, postedAt: '2024-01-01' }),
+      entry({ id: 'e', likes: 0, postedAt: '2025-01-01' }),
+    ]
+    expect(sortEntries(liked, 'likes').map((e) => e.id)).toEqual(['b', 'd', 'a', 'e', 'c'])
   })
 
   it('does not mutate the input', () => {

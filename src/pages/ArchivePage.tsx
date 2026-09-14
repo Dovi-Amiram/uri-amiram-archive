@@ -15,6 +15,13 @@ const SORT_LABELS: Record<SortMode, string> = {
   newest: 'החדש ביותר',
   oldest: 'הישן ביותר',
   title: 'לפי כותרת',
+  likes: 'הכי הרבה לייקים',
+}
+
+// Palindromes have no titles but do have likes.
+const SORT_MODES: Record<SectionInfo['category'], SortMode[]> = {
+  creation: ['newest', 'oldest', 'title'],
+  palindrome: ['newest', 'oldest', 'likes'],
 }
 
 export function ArchivePage({ section, entries, pending, onOpen, onAdd }: ArchivePageProps) {
@@ -57,7 +64,7 @@ export function ArchivePage({ section, entries, pending, onOpen, onAdd }: Archiv
         <div className="toolbar__sort">
           <label htmlFor={sortId}>מיון</label>
           <select id={sortId} value={sort} onChange={(e) => setSort(e.target.value as SortMode)}>
-            {(Object.keys(SORT_LABELS) as SortMode[]).map((mode) => (
+            {SORT_MODES[section.category].map((mode) => (
               <option key={mode} value={mode}>
                 {SORT_LABELS[mode]}
               </option>

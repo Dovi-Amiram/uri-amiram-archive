@@ -8,8 +8,19 @@
   "postedAt": "2016-07-16T20:55:30Z",
   "sourceUrl": "https://www.facebook.com/groups/1435021850049747/posts/1768003533418242/",
   "sourceId": "1768003533418242",
-  "scrapedAt": "2026-09-14T11:04:42Z",
+  "scrapedAt": "2026-09-14T11:54:05Z",
   "createdAt": "2026-09-14T11:04:42Z",
-  "updatedAt": "2026-09-14T11:04:42Z",
-  "attachments": []
+  "updatedAt": "2026-09-14T11:54:09Z",
+  "attachments": [
+    {
+      "type": "image",
+      "path": "attachments/facebook/1768003533418242-10155181416734625.jpg",
+      "width": 500,
+      "height": 342,
+      "alt": null,
+      "sourceId": "10155181416734625",
+      "order": 1
+    }
+  ],
+  "likes": 7
 }
