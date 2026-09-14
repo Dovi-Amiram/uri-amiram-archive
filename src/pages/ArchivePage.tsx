@@ -12,6 +12,9 @@ interface ArchivePageProps {
   onEdit: (entry: ArchiveEntry) => void
   onDelete: (entry: ArchiveEntry) => void
   onAdd: () => void
+  /** A write session is active in this tab (shows a logout button). */
+  loggedIn: boolean
+  onLogout: () => void
 }
 
 const SORT_LABELS: Record<SortField, string> = {
@@ -35,7 +38,7 @@ const DIRECTION_LABELS: Record<SortField, Record<SortDirection, string>> = {
 
 const DEFAULT_DIRECTION: Record<SortField, SortDirection> = { date: 'desc', title: 'asc', likes: 'desc' }
 
-export function ArchivePage({ section, entries, pendingIds, onOpen, onEdit, onDelete, onAdd }: ArchivePageProps) {
+export function ArchivePage({ section, entries, pendingIds, onOpen, onEdit, onDelete, onAdd, loggedIn, onLogout }: ArchivePageProps) {
   const [query, setQuery] = useState('')
   const [field, setField] = useState<SortField>('date')
   const [direction, setDirection] = useState<SortDirection>('desc')
@@ -105,9 +108,19 @@ export function ArchivePage({ section, entries, pendingIds, onOpen, onEdit, onDe
         </button>
       </div>
 
-      <p className="result-count" aria-live="polite">
-        {deferredQuery.trim() ? `נמצאו ${visible.length} מתוך ${entries.length}` : `${entries.length} פריטים`}
-      </p>
+      <div className="toolbar__status">
+        <p className="result-count" aria-live="polite">
+          {deferredQuery.trim() ? `נמצאו ${visible.length} מתוך ${entries.length}` : `${entries.length} פריטים`}
+        </p>
+        {loggedIn && (
+          <p className="session-note">
+            מחוברים לעריכה
+            <button type="button" className="text-button text-button--inline" onClick={onLogout}>
+              התנתקות
+            </button>
+          </p>
+        )}
+      </div>
 
       {visible.length === 0 ? (
         <p className="empty-state">{deferredQuery.trim() ? 'לא נמצאו פריטים התואמים לחיפוש' : 'אין עדיין פריטים'}</p>

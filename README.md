@@ -291,13 +291,23 @@ update `ALLOWED_ORIGINS` in `worker/wrangler.toml` and redeploy the Worker.
    deployment contains the entry, the data reloads. If it takes longer, the site shows
    "היצירה נשמרה בהצלחה. ייתכן שיחלפו מספר רגעים עד שתופיע באתר." This is not an error.
 
-**Editing:** open an entry → **עריכה**. Title, content, date, author, like count and source link
+**Adding several at once:** in the add dialog, **הוסף עוד פריט** moves the filled item into a
+list and clears the form (the author is kept). **סקירה ושמירה** shows all items; each can be edited
+or removed. **שמור הכל** saves up to 30 items in a single commit, so the site rebuilds once. The list
+and the item being typed are kept in the browser (localStorage) until saved, so a closed tab or
+reload does not lose them. Nothing sensitive is stored there.
+
+**Login:** the password is asked once and a 2-hour session is kept in the tab's memory (never on
+disk); **התנתקות** ends it immediately, and closing or reloading the tab ends it too.
+
+**Editing:** open an entry (or use the pencil icon on its card) → **עריכה**. Title, content, date, author, like count and source link
 can be changed (images are kept). The Worker commits `Edit <kind>: <title>`, marks the changed
 fields in `editedFields` so later scrapes don't overwrite them, and the site shows the change as
 pending until the new deployment is live. If the date is left unchanged, the original time of day
 is kept.
 
-**Deleting:** open an entry → **מחיקה** → confirm. One commit removes the entry, its images and
+**Deleting:** the trash icon on a card (or **מחיקה** in the open entry) → confirm in the
+"האם אתם בטוחים…" dialog. One commit removes the entry, its images and
 raw snapshot, and (for Tzura/Facebook items) records it in `archive/excluded.json` so it is never
 re-scraped. Everything stays recoverable from git history.
 

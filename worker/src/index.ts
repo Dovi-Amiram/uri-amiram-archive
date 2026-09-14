@@ -3,6 +3,7 @@
  *
  *   POST /api/login    { password }                         -> { token, expiresAt }
  *   POST   /api/entries           Bearer token, entry          -> 201 { entry, path, commitSha }
+ *   POST   /api/entries/batch     Bearer token, { entries }    -> 201 { entries, commitSha }  (one commit)
  *   PUT    /api/entries/:id       Bearer token, entry fields   -> 200 { entry, path, commitSha, changed }
  *   DELETE /api/entries/:id?category=creation|palindrome       -> 200 { id, deleted, commitSha }
  *   GET    /api/health                                         -> { ok: true }
@@ -15,6 +16,7 @@ import { bearerToken, issueToken, safeEqual, verifyToken } from './auth'
 import {
   addExclusion,
   applyEdit,
+  batchCommitMessage,
   buildEntry,
   commitMessage,
   ENTRY_ID,
@@ -85,14 +87,17 @@ function json(request: Request, env: Env, status: number, body: unknown): Respon
 
 const error = (request: Request, env: Env, status: number, message: string) => json(request, env, status, { error: message })
 
-async function readJsonBody(request: Request): Promise<{ ok: true; body: unknown } | { ok: false; status: number; message: string }> {
+async function readJsonBody(
+  request: Request,
+  maxBytes: number = LIMITS.bodyBytes,
+): Promise<{ ok: true; body: unknown } | { ok: false; status: number; message: string }> {
   if (!(request.headers.get('Content-Type') ?? '').toLowerCase().includes('application/json')) {
     return { ok: false, status: 415, message: 'נדרש תוכן מסוג JSON' }
   }
   const declared = Number(request.headers.get('Content-Length') ?? '0')
-  if (declared > LIMITS.bodyBytes) return { ok: false, status: 413, message: 'הבקשה גדולה מדי' }
+  if (declared > maxBytes) return { ok: false, status: 413, message: 'הבקשה גדולה מדי' }
   const raw = await request.arrayBuffer()
-  if (raw.byteLength > LIMITS.bodyBytes) return { ok: false, status: 413, message: 'הבקשה גדולה מדי' }
+  if (raw.byteLength > maxBytes) return { ok: false, status: 413, message: 'הבקשה גדולה מדי' }
   try {
     return { ok: true, body: JSON.parse(new TextDecoder().decode(raw)) }
   } catch {
@@ -143,6 +148,8 @@ export async function handleRequest(request: Request, env: Env, deps: Deps = def
       ? 'login'
       : request.method === 'POST' && url.pathname === '/api/entries'
         ? 'create'
+        : request.method === 'POST' && url.pathname === '/api/entries/batch'
+          ? 'batch'
         : request.method === 'PUT' && entryMatch
           ? 'edit'
           : request.method === 'DELETE' && entryMatch
@@ -162,7 +169,7 @@ export async function handleRequest(request: Request, env: Env, deps: Deps = def
 
   let body: unknown = null
   if (route !== 'delete') {
-    const parsed = await readJsonBody(request)
+    const parsed = await readJsonBody(request, route === 'batch' ? LIMITS.batchBodyBytes : LIMITS.bodyBytes)
     if (!parsed.ok) return error(request, env, parsed.status, parsed.message)
     body = parsed.body
   }
@@ -193,6 +200,29 @@ export async function handleRequest(request: Request, env: Env, deps: Deps = def
       return json(request, env, 201, { entry, path, commitSha })
     } catch (err) {
       return githubFailure(request, env, err, 'create')
+    }
+  }
+
+  if (route === 'batch') {
+    const items = (body as { entries?: unknown } | null)?.entries
+    if (!Array.isArray(items) || items.length === 0) return error(request, env, 400, 'אין פריטים לשמירה')
+    if (items.length > LIMITS.batchEntries) return error(request, env, 400, `אפשר לשמור עד ${LIMITS.batchEntries} פריטים בבת אחת`)
+    const built = []
+    for (const [index, item] of items.entries()) {
+      const validation = validateInput(item)
+      if (!validation.ok) return error(request, env, 400, `פריט ${index + 1}: ${validation.error}`)
+      built.push(buildEntry(validation.value, deps.uuid(), deps.now()))
+    }
+    try {
+      const { commitSha } = await commitChanges(
+        config,
+        built.map((entry) => ({ path: entryPath(entry), content: serializeEntry(entry) })),
+        batchCommitMessage(built),
+        deps.fetch,
+      )
+      return json(request, env, 201, { entries: built, commitSha })
+    } catch (err) {
+      return githubFailure(request, env, err, 'batch create')
     }
   }
 

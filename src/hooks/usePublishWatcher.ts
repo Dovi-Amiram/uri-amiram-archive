@@ -10,6 +10,8 @@ export interface PublishStatus {
   kind: 'publishing' | 'published' | 'delayed'
   change: ChangeKind
   category: Category
+  /** Number of entries in the change (a batch save has several). */
+  count: number
 }
 
 /**
@@ -30,11 +32,15 @@ export function usePublishWatcher(currentBuildId: string | null, reload: () => P
   }, [])
 
   const watch = useCallback(
-    (kind: ChangeKind, entry: ArchiveEntry) => {
-      const change: PendingChange = { kind, entry }
+    (kind: ChangeKind, entries: ArchiveEntry[]) => {
+      if (entries.length === 0) return
+      const changes: PendingChange[] = entries.map((entry) => ({ kind, entry }))
+      const ids = new Set(entries.map((e) => e.id))
+      const categories = [...new Set(entries.map((e) => e.category))]
+      const base = { change: kind, category: entries[0].category, count: entries.length }
       // A newer change to the same entry replaces an older pending one.
-      setPending((list) => [change, ...list.filter((c) => c.entry.id !== entry.id)])
-      setStatus({ kind: 'publishing', change: kind, category: entry.category })
+      setPending((list) => [...changes, ...list.filter((c) => !ids.has(c.entry.id))])
+      setStatus({ kind: 'publishing', ...base })
       const startedAt = Date.now()
       let lastSeenBuild = buildRef.current
 
@@ -43,11 +49,13 @@ export function usePublishWatcher(currentBuildId: string | null, reload: () => P
         if (version && version.buildId !== lastSeenBuild) {
           lastSeenBuild = version.buildId
           try {
-            const live = await fetchEntries(entry.category, version.buildId)
-            if (isChangeLive(change, live)) {
+            const live = Object.fromEntries(
+              await Promise.all(categories.map(async (c) => [c, await fetchEntries(c, version.buildId)] as const)),
+            )
+            if (changes.every((change) => isChangeLive(change, live[change.entry.category]))) {
               await reload()
-              setPending((list) => list.filter((c) => c !== change))
-              setStatus({ kind: 'published', change: kind, category: entry.category })
+              setPending((list) => list.filter((c) => !changes.includes(c)))
+              setStatus({ kind: 'published', ...base })
               return
             }
           } catch {
@@ -55,7 +63,7 @@ export function usePublishWatcher(currentBuildId: string | null, reload: () => P
           }
         }
         if (Date.now() - startedAt >= POLL_TIMEOUT_MS) {
-          setStatus({ kind: 'delayed', change: kind, category: entry.category })
+          setStatus({ kind: 'delayed', ...base })
           return
         }
         schedule()

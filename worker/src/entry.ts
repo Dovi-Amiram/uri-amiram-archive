@@ -12,6 +12,9 @@ export const DEFAULT_AUTHOR = 'אורי עמירם'
 /** Keep in sync with src/utils/validation.ts in the frontend. */
 export const LIMITS = {
   bodyBytes: 64 * 1024,
+  /** A batch of many songs in one request/commit. */
+  batchBodyBytes: 1024 * 1024,
+  batchEntries: 30,
   title: 200,
   author: 100,
   content: 20000,
@@ -259,6 +262,20 @@ export function addExclusion(existingText: string | null, entry: ArchiveEntry, n
   }
   data.entries.sort((a, b) => a.id.localeCompare(b.id))
   return `${JSON.stringify(data, null, 2)}\n`
+}
+
+/** Commit message for several new entries: a summary line plus one line per entry. */
+export function batchCommitMessage(entries: ArchiveEntry[]): string {
+  if (entries.length === 1) return commitMessage(entries[0])
+  const creations = entries.filter((e) => e.category === 'creation').length
+  const palindromes = entries.length - creations
+  const parts = [creations && `${creations} creation${creations > 1 ? 's' : ''}`, palindromes && `${palindromes} palindrome${palindromes > 1 ? 's' : ''}`]
+  const lines = entries.map((e) => {
+    const firstLine = e.content.split('\n').find((l) => l.trim())?.trim() ?? ''
+    const label = e.title ?? (firstLine.length > 60 ? `${firstLine.slice(0, 57)}...` : firstLine)
+    return `- ${kindLabel(e.category)}: ${label || e.id}`
+  })
+  return `Add ${parts.filter(Boolean).join(' and ')}\n\n${lines.join('\n')}`
 }
 
 /** Pretty JSON with readable Hebrew and a trailing newline, like the Python writer. */

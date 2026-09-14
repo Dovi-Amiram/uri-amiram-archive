@@ -55,8 +55,9 @@ export interface SavedEntryResponse {
   commitSha: string | null
 }
 
-export async function createEntry(token: string, payload: EntryPayload): Promise<SavedEntryResponse> {
-  return request<SavedEntryResponse>('POST', '/api/entries', payload, token)
+/** Several new entries saved as one commit. */
+export async function createEntries(token: string, payloads: EntryPayload[]): Promise<{ entries: unknown[]; commitSha: string | null }> {
+  return request('POST', '/api/entries/batch', { entries: payloads }, token)
 }
 
 export async function updateEntry(token: string, id: string, payload: EntryPayload): Promise<SavedEntryResponse & { changed: string[] }> {

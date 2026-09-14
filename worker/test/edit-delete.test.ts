@@ -230,3 +230,77 @@ describe('helpers', () => {
     expect(decode(b64('ok'))).toBe('ok')
   })
 })
+
+describe('POST /api/entries/batch', () => {
+  const uuids = () => {
+    let n = 0
+    return () => `uuid-${++n}`
+  }
+
+  it('creates many entries in ONE commit with a summary message', async () => {
+    const { fetchMock, calls } = fakeGithub({})
+    const d = { ...deps(fetchMock), uuid: uuids() }
+    const res = await handleRequest(
+      await authed('POST', '/api/entries/batch', {
+        entries: [
+          { category: 'creation', title: 'שיר ראשון', content: 'שורה\nשורה' },
+          { category: 'creation', title: null, content: 'בלי כותרת' },
+          { category: 'palindrome', content: 'ילד כותב בתוך דלי', likes: 4 },
+        ],
+      }),
+      env,
+      d,
+    )
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as { entries: ArchiveEntry[]; commitSha: string }
+    expect(body.entries.map((e) => e.id)).toEqual(['manual-uuid-1', 'manual-uuid-2', 'manual-uuid-3'])
+    expect(body.commitSha).toBe('commit2')
+
+    const tree = calls.find((c) => c.url.endsWith('/git/trees'))!.body as { tree: { path: string; content: string }[] }
+    expect(tree.tree.map((t) => t.path)).toEqual([
+      'archive/creations/manual-uuid-1.json',
+      'archive/creations/manual-uuid-2.json',
+      'archive/palindromes/manual-uuid-3.json',
+    ])
+    expect(JSON.parse(tree.tree[2].content)).toMatchObject({ category: 'palindrome', likes: 4, source: 'manual' })
+    expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(1)
+    const commit = calls.find((c) => c.method === 'POST' && c.url.endsWith('/git/commits'))!.body as { message: string }
+    expect(commit.message).toBe('Add 2 creations and 1 palindrome\n\n- creation: שיר ראשון\n- creation: בלי כותרת\n- palindrome: ילד כותב בתוך דלי')
+  })
+
+  it('rejects the whole batch if any item is invalid, naming the item', async () => {
+    const { fetchMock } = fakeGithub({})
+    const res = await handleRequest(
+      await authed('POST', '/api/entries/batch', { entries: [{ category: 'creation', content: 'ok' }, { category: 'creation', content: '  ' }] }),
+      env,
+      deps(fetchMock),
+    )
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'פריט 2: יש להזין תוכן' })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('enforces count limits and requires a token', async () => {
+    const { fetchMock } = fakeGithub({})
+    const tooMany = { entries: Array.from({ length: 31 }, () => ({ category: 'creation', content: 'x' })) }
+    expect((await handleRequest(await authed('POST', '/api/entries/batch', tooMany), env, deps(fetchMock))).status).toBe(400)
+    expect((await handleRequest(await authed('POST', '/api/entries/batch', { entries: [] }), env, deps(fetchMock))).status).toBe(400)
+    const anon = new Request('https://w.example/api/entries/batch', {
+      method: 'POST',
+      headers: { Origin: ORIGIN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entries: [{ category: 'creation', content: 'x' }] }),
+    })
+    expect((await handleRequest(anon, env, deps(fetchMock))).status).toBe(401)
+  })
+
+  it('accepts large batches of long songs (up to 1 MB)', async () => {
+    const { fetchMock } = fakeGithub({})
+    const song = 'שורה ארוכה של שיר עם מילים רבות\n'.repeat(300) // ~9 KB of Hebrew
+    const res = await handleRequest(
+      await authed('POST', '/api/entries/batch', { entries: Array.from({ length: 20 }, () => ({ category: 'creation', content: song })) }),
+      env,
+      { ...deps(fetchMock), uuid: uuids() },
+    )
+    expect(res.status).toBe(201)
+  })
+})

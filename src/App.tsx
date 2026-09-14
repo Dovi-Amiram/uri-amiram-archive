@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import { DeleteDialog } from './components/DeleteDialog'
+import { AddEntriesDialog } from './components/AddEntriesDialog'
 import { EntryForm } from './components/EntryForm'
 import { EntryReader } from './components/EntryReader'
 import { SiteHeader } from './components/SiteHeader'
@@ -9,7 +10,7 @@ import { useHashRoute } from './hooks/useHashRoute'
 import { usePublishWatcher } from './hooks/usePublishWatcher'
 import { ArchivePage } from './pages/ArchivePage'
 import { SECTIONS, sectionFor, type ArchiveEntry, type Category } from './types/archive'
-import type { SessionToken } from './utils/api'
+import { isSessionValid, type SessionToken } from './utils/api'
 import { applyPendingChanges } from './utils/archive'
 
 /** Which write dialog is open. */
@@ -72,6 +73,8 @@ export default function App() {
             onEdit={(entry) => setEditor({ mode: 'edit', entry })}
             onDelete={(entry) => setEditor({ mode: 'delete', entry })}
             onAdd={() => setEditor({ mode: 'create' })}
+            loggedIn={isSessionValid(session)}
+            onLogout={() => setSession(null)}
           />
         )}
       </main>
@@ -89,16 +92,28 @@ export default function App() {
           onDelete={(entry) => setEditor({ mode: 'delete', entry })}
         />
       )}
-      {(editor?.mode === 'create' || editor?.mode === 'edit') && (
-        <EntryForm
-          section={editor.mode === 'edit' ? sectionFor(editor.entry.category) : section}
-          entry={editor.mode === 'edit' ? editor.entry : undefined}
+      {editor?.mode === 'create' && (
+        <AddEntriesDialog
+          section={section}
           session={session}
           onSession={setSession}
           onClose={closeEditor}
-          onSaved={(entry, kind) => {
+          onSaved={(saved) => {
             setEditor(null)
-            watch(kind, entry)
+            watch('create', saved)
+          }}
+        />
+      )}
+      {editor?.mode === 'edit' && (
+        <EntryForm
+          section={sectionFor(editor.entry.category)}
+          entry={editor.entry}
+          session={session}
+          onSession={setSession}
+          onClose={closeEditor}
+          onSaved={(entry) => {
+            setEditor(null)
+            watch('update', [entry])
           }}
         />
       )}
@@ -112,7 +127,7 @@ export default function App() {
           onDeleted={(entry) => {
             setEditor(null)
             if (entryId === entry.id) closeReader()
-            watch('delete', entry)
+            watch('delete', [entry])
           }}
         />
       )}

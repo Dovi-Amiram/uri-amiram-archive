@@ -7,6 +7,7 @@ JSON file to GitHub. It has no database; GitHub is the storage.
 | --- | --- | --- |
 | `POST /api/login` `{ "password": "…" }` | — | Returns `{ token, expiresAt }`, a 2-hour HMAC-signed session token |
 | `POST /api/entries` | `Authorization: Bearer <token>` | Validates and commits `archive/<creations|palindromes>/manual-<uuid>.json` |
+| `POST /api/entries/batch` `{ "entries": [ … ] }` | `Authorization: Bearer <token>` | Validates 1–30 entries (request ≤ 1 MB) and commits them all in **one** commit; any invalid item rejects the whole batch |
 | `PUT /api/entries/:id` | `Authorization: Bearer <token>` | Edits title/content/postedAt/author/likes/sourceUrl of an existing entry (body includes `category`); records `editedAt`/`editedFields` |
 | `DELETE /api/entries/:id?category=…` | `Authorization: Bearer <token>` | Deletes the entry, its images and raw snapshot in one commit; scraped items are added to `archive/excluded.json` |
 | `GET /api/health` | — | `{ "ok": true }` |
